@@ -1,0 +1,13 @@
+{
+  "name": "nightshift",
+  "owner": {
+    "name": "Cameron Keith"
+  },
+  "plugins": [
+    {
+      "name": "nightshift",
+      "source": "./",
+      "description": "Long-running autonomous feature PMs that keep working while you sleep"
+    }
+  ]
+}
