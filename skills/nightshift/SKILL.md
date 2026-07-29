@@ -1,6 +1,7 @@
 ---
 name: nightshift
 description: Put features on the night shift. Hands a feature off to a long-lived autonomous PM that keeps working while you sleep - one dedicated claude process per git worktree, taking a brief or an OpenSpec plan, dispatching its own tiered worker agents, verifying its own work, and opening a PR, for hours or days without asking you anything. Use this skill the moment a user finishes planning and wants the work carried out unattended: "hand this off", "take it from here", "run with this", "kick that off", "put it on nightshift", "go build this while I sleep", "implement this plan overnight", or right after an OpenSpec proposal or spec is agreed and they ask what's next. Also use for running several features in parallel, checking on running agents ("check on my agents", "what shipped overnight", "what are the PMs doing"), parking work, setting up worktrees for parallel agent work, or resuming a run after a crash or a laptop sleep - even if they never say "nightshift" or "PM".
+version: 0.1.0
 ---
 
 # Nightshift

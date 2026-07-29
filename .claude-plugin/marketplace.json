@@ -1,4 +1,5 @@
 {
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
   "name": "nightshift",
   "owner": {
     "name": "Cameron Keith"
@@ -9,5 +10,6 @@
       "source": "./",
       "description": "Long-running autonomous feature PMs that keep working while you sleep"
     }
-  ]
+  ],
+  "description": "Autonomous feature PMs that keep working while you sleep"
 }
