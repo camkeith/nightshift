@@ -8,7 +8,9 @@
     {
       "name": "nightshift",
       "source": "./",
-      "description": "Long-running autonomous feature PMs that keep working while you sleep"
+      "description": "Long-running autonomous feature PMs that keep working while you sleep",
+      "category": "workflow",
+      "homepage": "https://github.com/camkeith/nightshift"
     }
   ],
   "description": "Autonomous feature PMs that keep working while you sleep"

@@ -9,12 +9,15 @@
         you go to bed  ·  work happens  ·  you wake up to pull requests
 ```
 
-You go to bed. Work happens. You wake up to pull requests and a short decision queue.
+Hand a feature to an agent and walk away.
 
-Nightshift runs long-lived autonomous feature PMs. One `claude` process per git worktree
-takes a feature brief, decomposes it, dispatches its own tiered worker agents, verifies
-its own work, opens a PR, and keeps going for hours or days without supervision. Several
-run at once on different features.
+One `claude` process per git worktree takes a brief, decomposes it, dispatches its own
+tiered worker agents, verifies its own work, and opens a pull request. It runs for hours
+or days and asks you nothing. When it hits something it must not decide alone, it parks
+that task with the exact command you would need and moves to the next one.
+
+You get a short decision queue in the morning instead of a 3am interruption. Several run
+at once on different features.
 
 ## Install
 
