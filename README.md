@@ -183,6 +183,10 @@ first live run, in which the PM found six defects in nightshift itself, includin
 where the watchdog would have restarted healthy PMs onto their own branches. It reported
 them and declined to fix them. That is the behavior the whole design is for.
 
+## License
+
+MIT. See [LICENSE](LICENSE).
+
 ## Status
 
 Version 0.1.0. Working but young, and the gap between those two matters here.
