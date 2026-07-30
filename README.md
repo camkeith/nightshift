@@ -98,7 +98,7 @@ region at a time (header chip: `[PMs]`, `[agents]`, or `[scroll]`).
 | `Esc` / `←` | Back: close agent → focus PMs |
 | `→` | Focus the right pane |
 | `i` / `a` / `w` / `s` | Message / attach tmux / wake once / stop |
-| mouse | Click PMs, tabs, agents; wheel scrolls (or moves PMs over the list) |
+| mouse | Click PMs, tabs, agents; wheel scrolls (or moves PMs over the list). Needs tmux `mouse on` (pm-top turns it on when it can). |
 
 A PM stops on its own when it reaches `READY-FOR-HUMAN` or `DONE`.
 

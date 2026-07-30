@@ -25,4 +25,10 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
   exit 1
 }
 
+# Clicks only reach the app if the terminal (and tmux) forward mouse events.
+# Turn tmux mouse on when we can; xterm mouse modes are also enabled inside pm_top.py.
+if [ -n "${TMUX:-}" ]; then
+  tmux set-option -g mouse on >/dev/null 2>&1 || true
+fi
+
 exec python3 "$HERE/pm_top.py" "$REPO"

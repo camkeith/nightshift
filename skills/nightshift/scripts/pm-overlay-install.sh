@@ -62,10 +62,11 @@ $BEGIN
 # ${KEY} floats pm-top over the current pane. Esc or q closes it.
 # -E closes the popup when the program exits, so pm-top's own q just works, and so does
 # 'a' (switch to a PM's session) which exits on purpose to let the popup get out of the way.
+# mouse on is required for clicks inside the popup to reach pm-top.
 bind-key -n ${KEY} display-popup -E -w 92% -h 88% \\
-  "cd '#{pane_current_path}' && bash '${HERE}/pm-top.sh'"
+  "tmux set-option -g mouse on >/dev/null 2>&1; cd '#{pane_current_path}' && bash '${HERE}/pm-top.sh'"
 bind-key C-n display-popup -E -w 92% -h 88% \\
-  "cd '#{pane_current_path}' && bash '${HERE}/pm-top.sh'"
+  "tmux set-option -g mouse on >/dev/null 2>&1; cd '#{pane_current_path}' && bash '${HERE}/pm-top.sh'"
 $END
 EOF
 }

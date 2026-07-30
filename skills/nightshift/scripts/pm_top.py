@@ -46,6 +46,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 import textwrap
 import time
 
@@ -981,6 +982,78 @@ def nav_back(S):
     return False
 
 
+# ---------------------------------------------------------------- mouse
+
+def _tty_write(data: bytes):
+    """Write CSI sequences to the real terminal, not the curses stdout wrapper."""
+    for stream in (getattr(sys, "__stdout__", None), sys.stdout):
+        if stream is None:
+            continue
+        try:
+            fd = stream.fileno()
+            os.write(fd, data)
+            return
+        except Exception:
+            continue
+    try:
+        with open("/dev/tty", "wb", buffering=0) as tty:
+            tty.write(data)
+    except Exception:
+        pass
+
+
+def enable_mouse(stdscr):
+    """Make clicks reach ncurses inside tmux popups and modern terminals.
+
+    ncurses mousemask alone is not enough on some stacks (tmux display-popup +
+    macOS Terminal/iTerm): the xterm mouse modes must also be enabled on the tty,
+    and keypad must be on so KEY_MOUSE is delivered.
+    """
+    try:
+        stdscr.keypad(True)
+    except Exception:
+        pass
+    try:
+        # Do not request motion reports — they flood getch and drown real clicks.
+        curses.mousemask(curses.ALL_MOUSE_EVENTS)
+        # 0 = deliver press/release immediately; we debounce ourselves.
+        curses.mouseinterval(0)
+    except Exception:
+        pass
+    # 1000=click, 1002=drag (helps some wheels), 1006=SGR coords, 1007=alt scroll
+    _tty_write(b"\033[?1000h\033[?1002h\033[?1006h\033[?1007h")
+
+
+def disable_mouse():
+    _tty_write(b"\033[?1007l\033[?1006l\033[?1002l\033[?1000l")
+    try:
+        curses.mousemask(0)
+    except Exception:
+        pass
+
+
+def _mouse_is_click(bst):
+    """True for a left-button press/release/click. Motion-only events are false."""
+    bits = (
+        curses.BUTTON1_PRESSED
+        | curses.BUTTON1_RELEASED
+        | curses.BUTTON1_CLICKED
+        | getattr(curses, "BUTTON1_DOUBLE_CLICKED", 0)
+        | getattr(curses, "BUTTON1_TRIPLE_CLICKED", 0)
+    )
+    return bool(bst & bits)
+
+
+def _mouse_debounce(S, mx, my):
+    """Collapse press+release (and duplicate CSI) into one logical click."""
+    now = time.time()
+    prev = S.get("_click_debounce")
+    if prev and prev[0] == mx and prev[1] == my and (now - prev[2]) < 0.28:
+        return False
+    S["_click_debounce"] = (mx, my, now)
+    return True
+
+
 # ---------------------------------------------------------------- drawing
 
 def hline(scr, y, x, n, ch="─", attr=0):
@@ -1316,16 +1389,8 @@ def _in_box(my, mx, box):
 def main(stdscr, repo, skill_dir):
     curses.curs_set(0)
     stdscr.nodelay(True)
-    # Mouse: click PMs / tabs / workers / footer; wheel scrolls the detail pane.
-    # BUTTON5 is wheel-down on most terminals but is absent from some curses builds, so
-    # it is resolved defensively rather than referenced directly.
-    try:
-        curses.mousemask(curses.ALL_MOUSE_EVENTS | curses.REPORT_MOUSE_POSITION)
-        curses.mouseinterval(200)
-        # 1000=click, 1002=button-event (better wheel), 1006=SGR, 1007=alternate scroll
-        print("\033[?1003l\033[?1000h\033[?1002h\033[?1006h\033[?1007h", end="", flush=True)
-    except Exception:
-        pass
+    stdscr.keypad(True)
+    enable_mouse(stdscr)
     curses.start_color()
     curses.use_default_colors()
     for pid, c in ((C_RED, curses.COLOR_RED), (C_AMBER, curses.COLOR_YELLOW),
@@ -1339,11 +1404,8 @@ def main(stdscr, repo, skill_dir):
     S = {"pms": load_pms(repo), "sel": 0, "pane": 0, "scroll": 0,
          "focus": "list", "last": 0.0, "flash": "", "flash_at": 0.0,
          "hits": {"pms": [], "tabs": [], "keys": [], "workers": [], "detail": None, "back": None},
-         "wsel": 0, "wopen": None, "_ws": [], "_mclick": None}
+         "wsel": 0, "wopen": None, "_ws": [], "_mclick": None, "_click_debounce": None}
     WHEEL_DOWN = getattr(curses, "BUTTON5_PRESSED", 0x200000)
-    BTN1 = (curses.BUTTON1_PRESSED | curses.BUTTON1_CLICKED
-            | getattr(curses, "BUTTON1_DOUBLE_CLICKED", 0)
-            | getattr(curses, "BUTTON1_TRIPLE_CLICKED", 0))
 
     try:
       while True:
@@ -1376,7 +1438,6 @@ def main(stdscr, repo, skill_dir):
                     move_pm(S, -1)
                     S["focus"] = "list"
                 else:
-                    # On agents list, wheel moves selection; otherwise scroll.
                     if (S.get("pane") == 1 and S.get("wopen") is None and S.get("_ws")
                             and S.get("focus") != "list"):
                         move_worker(S, -1)
@@ -1396,7 +1457,9 @@ def main(stdscr, repo, skill_dir):
                         S["scroll"] += 3
                     S["focus"] = "detail"
                 continue
-            if not (bst & BTN1):
+            if not _mouse_is_click(bst):
+                continue
+            if not _mouse_debounce(S, mx, my):
                 continue
 
             # Footer keys first (ungetch into the normal key path)
@@ -1571,14 +1634,10 @@ def main(stdscr, repo, skill_dir):
             elif ans is None:
                 S["flash"], S["flash_at"] = "cancelled", time.time()
     finally:
-        try:
-            print("\033[?1007l\033[?1006l\033[?1002l\033[?1000l", end="", flush=True)
-        except Exception:
-            pass
+        disable_mouse()
 
 
 if __name__ == "__main__":
-    import sys
     repo = sys.argv[1] if len(sys.argv) > 1 else os.getcwd()
     skill = sys.argv[2] if len(sys.argv) > 2 else os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     try:
