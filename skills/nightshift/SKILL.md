@@ -283,6 +283,51 @@ unreliably, so watch for false green. The first real run exited **23**, exactly 
 failing count, and every one of those failures was environmental. False red is the more
 dangerous direction overnight, because it invites you to "fix" working code.
 
+## Supervising your workers
+
+The instinct is to watch workers mid-flight and steer them when they drift. **Do not.**
+Watch for silence and cost, not for wrongness.
+
+### Why not correctness
+
+Three reasons, in order of weight:
+
+1. **It is session memory.** Holding live state about worker progress dies with your wake.
+   Everything here is built so a wake is disposable and the ledger is the truth; a
+   supervision loop quietly violates that and breaks the first time you are compacted.
+2. **Mid-course correction usually makes output worse.** A worker seventy percent through
+   an approach, told to change direction, produces a hybrid that satisfies neither.
+3. **It treats the symptom.** A worker that goes wrong was under-specified. The fix is a
+   better goal up front and harder verification at the end, not commentary in the middle.
+
+So: dispatch with a goal and the exact command that proves it, let the worker finish, then
+verify yourself. If verification fails, re-dispatch **with the failure as input**. That is
+a clean second attempt rather than a muddled first one.
+
+### What to watch instead
+
+Only two things, both mechanical, neither requiring judgment:
+
+- **Silence.** A worker producing nothing for far longer than the task warrants is stuck,
+  not thinking. Stop it, record what it was asked to do, and re-dispatch with a narrower
+  goal. Same rule the supervisor applies to you: zero throughput, not wrong direction.
+- **Cost.** A worker well past a reasonable spend for its task is looping. Stop it. Your
+  own per-wake cost is recorded in the registry; treat a wake that is an order of
+  magnitude above your average as a signal to look at what you dispatched.
+
+### Prefer synchronous dispatch
+
+Default to synchronous workers. A wake is meant to be one useful unit of work, so a
+blocking call you then verify is simpler and has no supervision problem at all.
+
+Reach for `run_in_background` only when tasks are genuinely independent and parallel
+speedup is real. Then check on them by liveness, not by reading their work in progress.
+
+The exception worth naming: **a worker that asks you a question has already failed the
+dispatch.** Its goal was ambiguous. Answer from the brief if you can, and if you cannot,
+that ambiguity belongs in the ledger as a blocker rather than being resolved by guessing
+on the worker's behalf.
+
 ## Quality gates
 
 Passing tests is the floor, not the bar. Left alone, a PM optimizes for "task done" and
