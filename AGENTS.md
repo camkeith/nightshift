@@ -17,7 +17,7 @@ The skill branches on who invoked it. Get this right before doing anything else.
 | Mode | Trigger | Questions allowed? |
 |---|---|---|
 | **Kickoff** | A human types `/nightshift` in their own session | **Yes, exactly once.** This is the only interactive moment in the whole system. |
-| **Wake** | `pm-launch.sh` runs `claude -p "You are PM <slug>..."` | **No.** Nobody is there. Park blockers to the ledger and continue. |
+| **Wake** | `pm-launch.sh` runs a fresh provider process (`claude -p` / `codex exec` / `cursor-agent -p`) with the PM prompt | **No.** Nobody is there. Park blockers to the ledger and continue. |
 
 Intended flow: a human plans (often an OpenSpec change), types `/nightshift`, answers one
 confirmation, and walks away. Everything after that is unattended until the PM hits a
@@ -36,6 +36,7 @@ setup happens at kickoff rather than mid-run.
 | `bash scripts/pm-launch.sh <slug>` | Start the supervised loop: tmux + caffeinate + restart wrapper + dead-PM watchdog. |
 | `bash scripts/pm-launch.sh <slug> --once` | Run exactly one wake in the foreground. Use this before trusting the loop. |
 | `bash scripts/pm-launch.sh <slug> --stop` | Stop that PM's tmux session. |
+| `bash scripts/pm-launch.sh <slug> --provider claude\|codex\|cursor` | Set/persist inference provider on the claim (default `claude`). |
 | `bash scripts/pm-top.sh` | Interactive. Split view with per-PM stats (runtime, wakes, spend, commits, diff, task progress, workers). `^/v` pick a PM, `<-/->` switch pane, `enter` open a worker. Per-PM: started, runtime, wakes, spend, commits, diff, task progress, models, token split. Per-worker: its goal from the PM, model, tokens, and a collapsed tool timeline. Mouse and wheel supported. Writes only INBOX.md. |
 | `bash scripts/pm-watch.sh` | One line per PM state change. Run it with `run_in_background` when a human wants progress without leaving Claude Code: background tasks populate the arrow-navigable footer, so it becomes an entry they reach with `down`, then `enter`. `--once` prints the current state and exits. |
 | `bash scripts/pm-overlay-install.sh` | Bind prefix+C-n in tmux to float pm-top over Claude Code. Esc returns. The footer can host pm-watch but not a curses UI; see the script header. |
@@ -148,7 +149,10 @@ away without warning.
 <repo>/.nightshift/repo-facts.md                  this repo's landmines
 ```
 
-Each wake is a fresh `claude -p` that reads the ledger and continues. That makes "resume
+Each wake is a fresh provider process that reads the ledger and continues. That makes "resume
+from files" true by construction. Default provider is `claude`; switch with `--provider`
+or `PM_PROVIDER` when Claude is unavailable. Non-Claude providers do not get Claude's
+Agent/Workflow tools.
 from files" true by construction: a fresh process cannot lean on session memory, so an
 insufficient ledger breaks visibly on wake 2 instead of silently on day 2.
 

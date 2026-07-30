@@ -105,6 +105,21 @@ moved rather than the same three rows stamped a hundred times.
 For the full view over the top of Claude Code, `pm-overlay-install.sh` binds a tmux key to
 float `pm-top` above the session; Esc drops you back exactly where you were.
 
+### Switching inference provider
+
+Each PM defaults to Claude. When Claude is out of tokens (or you want a different host),
+switch that PM manually and restart:
+
+```bash
+bash $NS/pm-launch.sh <slug> --provider codex     # or cursor, or claude
+# equivalent: PM_PROVIDER=codex bash $NS/pm-launch.sh <slug>
+```
+
+The choice is persisted on the registry claim. Prefer `--once` after a switch before
+leaving the supervised loop running. Codex and Cursor run the same ledger-driven loop;
+they do **not** get Claude Code's `Agent` / `Workflow` tools or the nightshift skill
+auto-load. Cost tracking stays accurate for Claude and is best-effort elsewhere.
+
 ### Driving it directly
 
 `/nightshift` is a wrapper around three scripts. Run them yourself if you want more
@@ -116,15 +131,16 @@ control. They need the sandbox disabled, so either a terminal or an agent with a
 | `pm-launch.sh <slug>` | Start the supervised loop: tmux + caffeinate + restart wrapper + watchdog |
 | `pm-launch.sh <slug> --once` | One wake in the foreground. Do this before trusting the loop |
 | `pm-launch.sh <slug> --stop` | Stop that PM |
-| `pm-status.sh [slug]` | Every PM on one screen, blockers first |
+| `pm-launch.sh <slug> --provider …` | Set/persist `claude`, `codex`, or `cursor` for that PM |
+| `pm-status.sh [slug]` | Every PM on one screen, blockers first (shows `[provider]`) |
 | `pm-top.sh` | Interactive. Arrow through PMs, `<-/->` panes, enter to open a worker |
 | `pm-watch.sh` | One line per state change. Run it in the background to get a footer entry you can arrow into |
 | `pm-overlay-install.sh` | Bind a tmux key to float `pm-top` over Claude Code; Esc returns |
 | `pm-teardown.sh <slug>` | Retire a PM safely: stop, remove, prune, mark done |
 
-`PM_WORKFLOWS=1` before `pm-launch.sh` grants the PM standing Workflow orchestration. Off
-by default on cost grounds, not capability: a PM wakes at least 24 times a day, and it
-already has parallel agent dispatch for ordinary fan-out.
+`PM_WORKFLOWS=1` before `pm-launch.sh` grants the PM standing Workflow orchestration
+(Claude only). Off by default on cost grounds, not capability: a PM wakes at least 24
+times a day, and it already has parallel agent dispatch for ordinary fan-out.
 
 **Agents: read [`AGENTS.md`](AGENTS.md).** Entry points, invariants, environment
 constraints, and the state model, without the prose.
@@ -157,7 +173,8 @@ closed laptop lid; `/loop` wakeups live in memory. So `pm-launch.sh` is `caffein
 tmux plus a restart wrapper plus a dead-PM watchdog. Claude supplies pacing; the
 supervisor supplies survival.
 
-**A PM's identity is its ledger file, not its session.** Each wake is a fresh `claude -p`
+**A PM's identity is its ledger file, not its session.** Each wake is a fresh provider
+process (`claude -p`, `codex exec`, or `cursor-agent -p`)
 that reads `LEDGER.md` and continues. That makes "resume from files" true by construction
 rather than by discipline: a fresh process cannot lean on session memory, so an
 insufficient ledger breaks visibly on wake 2 instead of silently on day 2 after a

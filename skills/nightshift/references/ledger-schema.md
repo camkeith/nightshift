@@ -129,11 +129,18 @@ stale lock file that deadlocks every other PM at 3am is precisely the failure th
   "test_db": "acme_test_billing",
   "packages": ["api", "client"],
   "tmux_session": "pm-billing",
+  "provider": "claude",
   "started": "2026-07-29T06:00:00Z",
   "heartbeat": "2026-07-29T14:20:00Z",
   "status": "RUNNING"
 }
 ```
+
+`provider` is optional and defaults to `claude`. Set it with
+`pm-launch.sh <slug> --provider claude|codex|cursor` or `PM_PROVIDER=...` at launch;
+both persist onto the claim so later `--once` wakes (and restarts) keep the choice.
+Non-Claude providers run the same ledger-driven loop but do not get Claude Code's
+`Agent` / `Workflow` tools or the nightshift skill auto-load.
 
 ### What the registry arbitrates
 
@@ -143,6 +150,7 @@ stale lock file that deadlocks every other PM at 3am is precisely the failure th
 | branch | `feat/<slug>`, one owner |
 | worktree path | `pm-<slug>`, one owner |
 | test DB name | `acme_test_<slug>`, one owner. This is the one that prevents silent corruption; see repo-facts 1.1. |
+| provider | `claude` (default), `codex`, or `cursor`. Per-PM; not a shared lock. |
 | dev servers | Nobody. PMs do not run them. |
 
 ### Heartbeat: the supervisor writes it, the PM must not try

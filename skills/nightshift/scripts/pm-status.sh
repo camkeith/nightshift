@@ -132,8 +132,9 @@ for d in records:
     elif secs is not None and secs > 7200:        tag, col = "STALLED?",  C["r"]
     else:                                         tag, col = "running",   C["c"]
 
+    prov = d.get("provider") or "claude"
     print(f"{col}{C['b']}{d['slug']:<16}{tag:<12}{C['x']}{C['d']}{ago:>10}{C['x']}  {d.get('feature','')}")
-    print(f"{C['d']}{'':<16}{d.get('branch','?')}{C['x']}")
+    print(f"{C['d']}{'':<16}{d.get('branch','?')}  [{prov}]{C['x']}")
 
     if d["_blockers"]:
         print(f"  {C['y']}blocked on {len(d['_blockers'])}:{C['x']}")
@@ -167,6 +168,7 @@ if needs:
 if dead:
     print(f"{C['r']}{len(dead)} PM(s) not running: {', '.join(d['slug'] for d in dead)}{C['x']}")
     print(f"{C['d']}  restart:  bash ~/.claude/skills/nightshift/scripts/pm-launch.sh <slug>{C['x']}")
+    print(f"{C['d']}            --provider claude|codex|cursor to switch inference{C['x']}")
     print(f"{C['d']}            (needs the sandbox off; an agent can do this with approval){C['x']}")
 total = sum(d.get("cost_usd") or 0 for d in records)
 if total:

@@ -5,17 +5,26 @@
 #   pm-launch.sh <slug>              start (or reattach to) a PM in tmux
 #   pm-launch.sh <slug> --once       run exactly one wake in the foreground (test/debug)
 #   pm-launch.sh <slug> --stop       stop the PM's tmux session
+#   pm-launch.sh <slug> --provider claude|codex|cursor
+#                                    set/persist the inference provider (combinable with --once)
 #
 # WHY A WRAPPER AND NOT /loop:
-#   /loop registers its wakeups in memory. A closed laptop lid, a `claude`
-#   autoupdate, or a crash ends the run silently with no recovery. Claude Code can
+#   /loop registers its wakeups in memory. A closed laptop lid, a provider CLI
+#   autoupdate, or a crash ends the run silently with no recovery. The agent CLI can
 #   supply pacing; it cannot supply durability. That has to come from the OS.
 #
-# WHY EACH WAKE IS A FRESH `claude -p`:
+# WHY EACH WAKE IS A FRESH PROVIDER PROCESS:
 #   It makes the "resume from files" requirement true by construction instead of by
 #   discipline. A fresh process cannot accidentally rely on session memory, so if
 #   LEDGER.md is not sufficient to continue, that breaks immediately and visibly on
 #   wake 2 rather than silently on day 2 after a compaction.
+#
+# PROVIDERS:
+#   claude (default) — `claude -p` with nightshift skill + cost JSON
+#   codex            — `codex exec` (ledger-driven; no Claude Agent/Workflow tools)
+#   cursor           — `cursor-agent -p` (same limits as codex)
+#   Resolve order: --provider > PM_PROVIDER env > claim.provider > claude.
+#   CLI/env values are written to the claim so restarts stick.
 
 set -euo pipefail
 
@@ -33,9 +42,34 @@ MAX_STAGNANT="${PM_MAX_STAGNANT:-5}" # wakes with no progress before stopping
 
 die() { printf '\033[31merror:\033[0m %s\n' "$*" >&2; exit 1; }
 say() { printf '\033[36m==>\033[0m %s\n' "$*"; }
+warn() { printf '\033[33mwarn:\033[0m %s\n' "$*" >&2; }
 
-[ $# -ge 1 ] || die "usage: pm-launch.sh <slug> [--once|--stop]"
-SLUG="$1"; MODE="${2:-}"
+[ $# -ge 1 ] || die "usage: pm-launch.sh <slug> [--once|--stop] [--provider claude|codex|cursor]"
+SLUG="$1"; shift
+
+MODE=""
+PROVIDER_FLAG=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --once|--stop)
+      [ -z "$MODE" ] || die "only one of --once / --stop allowed"
+      MODE="$1"
+      shift
+      ;;
+    --provider)
+      [ $# -ge 2 ] || die "--provider needs claude|codex|cursor"
+      PROVIDER_FLAG="$2"
+      shift 2
+      ;;
+    --provider=*)
+      PROVIDER_FLAG="${1#--provider=}"
+      shift
+      ;;
+    *)
+      die "unknown argument: $1"
+      ;;
+  esac
+done
 
 CLAIM="$REGISTRY/$SLUG.json"
 
@@ -71,14 +105,48 @@ except Exception:
     d = {}
 d["status"] = "STOPPED"
 json.dump(d, open(p, "w"), indent=2)
+open(p, "a").write("\n")
 PY
   exit 0
 fi
 
-# The wake prompt. Deliberately near-stateless: it tells the PM where it lives and
-# what to read, and nothing about what it was doing. The ledger supplies that.
-read -r -d '' WAKE_PROMPT <<PROMPT || true
-Use the nightshift skill. You are PM "$SLUG", working in $WORKTREE.
+# Resolve inference provider. Persist when CLI or env explicitly set one so the
+# supervised loop's later --once calls (which only read the claim) keep the choice.
+CLAIM_PROVIDER=$(load_claim provider)
+PROVIDER="${PROVIDER_FLAG:-${PM_PROVIDER:-${CLAIM_PROVIDER:-claude}}}"
+case "$PROVIDER" in
+  claude|codex|cursor) ;;
+  *) die "unknown provider '$PROVIDER' (want claude|codex|cursor)" ;;
+esac
+
+if [ -n "$PROVIDER_FLAG" ] || [ -n "${PM_PROVIDER:-}" ]; then
+  CLAIM="$CLAIM" PROVIDER="$PROVIDER" python3 -c '
+import json, os
+p, prov = os.environ["CLAIM"], os.environ["PROVIDER"]
+try:
+    d = json.load(open(p))
+except Exception:
+    d = {}
+d["provider"] = prov
+json.dump(d, open(p, "w"), indent=2)
+open(p, "a").write("\n")
+'
+  say "provider set to '$PROVIDER' (persisted on claim)"
+fi
+
+provider_bin() {
+  case "$1" in
+    claude) echo claude ;;
+    codex) echo codex ;;
+    cursor) echo cursor-agent ;;
+  esac
+}
+BIN=$(provider_bin "$PROVIDER")
+command -v "$BIN" >/dev/null || die "'$BIN' not found on PATH. install it, or pick another --provider"
+
+# Shared wake body. Ledger is the memory; the provider process is disposable.
+read -r -d '' WAKE_BODY <<PROMPT || true
+You are PM "$SLUG", working in $WORKTREE.
 
 This is a fresh process with no memory of previous wakes. Everything you know is on
 disk. Read $WORKTREE/LEDGER.md first, then the OpenSpec tasks.md it points at, then
@@ -91,7 +159,15 @@ If every remaining task is BLOCKED, set STATUS: READY-FOR-HUMAN at the top of th
 ledger and exit without doing more work.
 PROMPT
 
+# Claude can load the nightshift skill; other providers only get the ledger-driven body.
+if [ "$PROVIDER" = "claude" ]; then
+  WAKE_PROMPT="Use the nightshift skill. $WAKE_BODY"
+else
+  WAKE_PROMPT="Follow the nightshift PM loop using only what is on disk (LEDGER.md and any OpenSpec files it references). You do not have Claude Code's Agent/Workflow tools. $WAKE_BODY"
+fi
+
 # Standing Workflow orchestration for the PM. Opt in with PM_WORKFLOWS=1.
+# Claude-only: Codex/Cursor have no equivalent settings key.
 #
 # The `ultracode` KEYWORD cannot be self-granted: it is human-typed and deliberately
 # hardened against firing from non-human input. But the same capability is a settings
@@ -113,8 +189,8 @@ PROMPT
 # UNTESTED as of this writing. The flag and the settings key are both documented and
 # `claude --help` confirms --settings, but no PM has yet run a wake with it enabled.
 
-# Settings passed to EVERY wake, so a PM's behavior does not depend on whatever the
-# human's global settings happen to be.
+# Settings passed to EVERY Claude wake, so a PM's behavior does not depend on whatever
+# the human's global settings happen to be.
 #
 # askUserQuestionTimeout is the important one. It defaults to "never", which means a
 # question blocks until the run ages out. For a PM that is the worst possible default:
@@ -126,53 +202,120 @@ PROMPT
 WAKE_SETTINGS='{"askUserQuestionTimeout":"60s"}'
 WORKFLOW_SETTINGS='{"askUserQuestionTimeout":"60s","ultracode":true,"workflowSizeGuideline":"small"}'
 
-run_one_wake() {
-  cd "$WORKTREE"
-  # OPENCLAW_SESSION=true puts gstack skills in auto-choose mode instead of stopping
-  # to ask. Verified by running gstack-session-kind directly.
-  # Do NOT set CI or GITHUB_ACTIONS: those resolve to `headless`, which makes gstack
-  # BLOCK on an AskUserQuestion failure rather than auto-choosing. That is worse than
-  # doing nothing.
-  # --output-format json so the wake reports total_cost_usd exactly. Without this a
-  # PM's spend is invisible until the bill: it wakes >=24x/day, each wake fans out, and
-  # PM_WORKFLOWS multiplies that again. An unattended system that can quietly cost money
-  # needs the number surfaced, not estimated.
-  OUT="$WORKTREE/.nightshift-wake.json"
-  if [ "${PM_WORKFLOWS:-0}" = "1" ]; then
-    OPENCLAW_SESSION=true PM_SLUG="$SLUG" \
-      claude -p "$WAKE_PROMPT" --settings "$WORKFLOW_SETTINGS" --output-format json > "$OUT"
-  else
-    OPENCLAW_SESSION=true PM_SLUG="$SLUG" \
-      claude -p "$WAKE_PROMPT" --settings "$WAKE_SETTINGS" --output-format json > "$OUT"
-  fi
-  rc=$?
-  CLAIM="$CLAIM" OUT="$OUT" python3 -c '
+# Best-effort wake accounting. Claude's result JSON has total_cost_usd. Other providers
+# may or may not; never invent a number.
+record_wake() {
+  CLAIM="$CLAIM" OUT="$1" PROVIDER="$PROVIDER" python3 -c '
 import json, os
-claim, out = os.environ["CLAIM"], os.environ["OUT"]
+claim, out, provider = os.environ["CLAIM"], os.environ["OUT"], os.environ["PROVIDER"]
 try:
-    d = json.load(open(out))
-    r = next(o for o in d if o.get("type") == "result")
+    raw = open(out).read().strip()
+    if not raw:
+        raise SystemExit
+    d = json.loads(raw)
 except Exception:
+    # Still count the wake so stagnation/cost visibility is not frozen on parse failure.
+    try:
+        c = json.load(open(claim))
+    except Exception:
+        c = {}
+    c["wakes"] = c.get("wakes", 0) + 1
+    c["provider"] = provider
+    json.dump(c, open(claim, "w"), indent=2); open(claim, "a").write("\n")
     raise SystemExit
+
+# Claude: list of events with type==result
+# Codex --json / cursor-agent --output-format json: object or event stream
+cost = None
+turns = None
+text = ""
+
+def from_result(r):
+    global cost, turns, text
+    if not isinstance(r, dict):
+        return
+    if r.get("total_cost_usd") is not None:
+        cost = float(r["total_cost_usd"] or 0)
+    elif r.get("cost_usd") is not None:
+        cost = float(r["cost_usd"] or 0)
+    elif isinstance(r.get("usage"), dict) and r["usage"].get("cost_usd") is not None:
+        cost = float(r["usage"]["cost_usd"] or 0)
+    if r.get("num_turns") is not None:
+        turns = r.get("num_turns")
+    text = r.get("result") or r.get("message") or r.get("last_message") or text
+
+if isinstance(d, list):
+    for o in d:
+        if isinstance(o, dict) and o.get("type") == "result":
+            from_result(o)
+            break
+    if cost is None:
+        for o in d:
+            if isinstance(o, dict):
+                from_result(o)
+elif isinstance(d, dict):
+    from_result(d)
+    if d.get("type") == "result":
+        from_result(d)
+
 try:
     c = json.load(open(claim))
 except Exception:
     c = {}
 c["wakes"] = c.get("wakes", 0) + 1
-c["cost_usd"] = round(c.get("cost_usd", 0.0) + float(r.get("total_cost_usd") or 0), 4)
-c["last_wake_cost_usd"] = round(float(r.get("total_cost_usd") or 0), 4)
-c["last_wake_turns"] = r.get("num_turns")
+c["provider"] = provider
+if cost is not None:
+    c["cost_usd"] = round(c.get("cost_usd", 0.0) + cost, 4)
+    c["last_wake_cost_usd"] = round(cost, 4)
+if turns is not None:
+    c["last_wake_turns"] = turns
 json.dump(c, open(claim, "w"), indent=2); open(claim, "a").write("\n")
+if text:
+    print(str(text)[:2000])
 ' 2>/dev/null || true
-  # Surface the wake's own text so the tmux pane stays readable.
-  python3 -c '
-import json,sys
-try:
-    d=json.load(open(sys.argv[1]))
-    r=next(o for o in d if o.get("type")=="result")
-    print(r.get("result","")[:2000])
-except Exception: pass
-' "$OUT" 2>/dev/null || true
+}
+
+run_one_wake() {
+  cd "$WORKTREE"
+  OUT="$WORKTREE/.nightshift-wake.json"
+  : > "$OUT"
+  rc=0
+
+  case "$PROVIDER" in
+    claude)
+      # OPENCLAW_SESSION=true puts gstack skills in auto-choose mode instead of stopping
+      # to ask. Verified by running gstack-session-kind directly.
+      # Do NOT set CI or GITHUB_ACTIONS: those resolve to `headless`, which makes gstack
+      # BLOCK on an AskUserQuestion failure rather than auto-choosing. That is worse than
+      # doing nothing.
+      # --output-format json so the wake reports total_cost_usd exactly. Without this a
+      # PM's spend is invisible until the bill: it wakes >=24x/day, each wake fans out, and
+      # PM_WORKFLOWS multiplies that again. An unattended system that can quietly cost money
+      # needs the number surfaced, not estimated.
+      if [ "${PM_WORKFLOWS:-0}" = "1" ]; then
+        OPENCLAW_SESSION=true PM_SLUG="$SLUG" \
+          claude -p "$WAKE_PROMPT" --settings "$WORKFLOW_SETTINGS" --output-format json > "$OUT" || rc=$?
+      else
+        OPENCLAW_SESSION=true PM_SLUG="$SLUG" \
+          claude -p "$WAKE_PROMPT" --settings "$WAKE_SETTINGS" --output-format json > "$OUT" || rc=$?
+      fi
+      ;;
+    codex)
+      # Unattended: full bypass. workspace-write is not enough for package installs / tests.
+      codex exec --json \
+        --dangerously-bypass-approvals-and-sandbox \
+        -C "$WORKTREE" \
+        "$WAKE_PROMPT" > "$OUT" || rc=$?
+      ;;
+    cursor)
+      cursor-agent -p --force --trust --sandbox disabled \
+        --workspace "$WORKTREE" \
+        --output-format json \
+        "$WAKE_PROMPT" > "$OUT" || rc=$?
+      ;;
+  esac
+
+  record_wake "$OUT"
   return $rc
 }
 
@@ -183,7 +326,7 @@ except Exception: pass
 #  1. The registry lives outside the PM's worktree, and a sandboxed PM gets
 #     "EPERM: operation not permitted, open 'smoke.json'" trying to write it. If the PM
 #     owned the heartbeat, every healthy PM would look dead after two hours and the
-#     watchdog would restart live ones, putting two claude processes on one branch. That
+#     watchdog would restart live ones, putting two provider processes on one branch. That
 #     is the exact corruption the registry exists to prevent.
 #  2. A PM hand-editing header fields corrupts them. Observed on the first real wake:
 #     "LAST WAKE: 2026-07-29T16:/ wake 2", a mangled timestamp that also leaked into the
@@ -215,7 +358,7 @@ PY
 }
 
 if [ "$MODE" = "--once" ]; then
-  say "single wake for '$SLUG' (foreground)"
+  say "single wake for '$SLUG' via $PROVIDER (foreground)"
   run_one_wake
   beat RUNNING
   exit 0
@@ -254,7 +397,7 @@ if grep -qE '^STATUS: (READY-FOR-HUMAN|DONE)' "$WORKTREE/LEDGER.md" 2>/dev/null;
 fi
 
 # The supervised loop, written to a file so tmux runs something inspectable rather
-# than a giant quoted one-liner.
+# than a giant quoted one-liner. Provider lives on the claim; each --once re-reads it.
 RUNNER="$WT_ROOT/.run-$SLUG.sh"
 cat > "$RUNNER" <<RUNNER_EOF
 #!/usr/bin/env bash
@@ -321,7 +464,7 @@ import json,datetime
 p='$CLAIM'; d=json.load(open(p))
 d['status']='CRASHED'
 d['heartbeat']=datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
-json.dump(d,open(p,'w'),indent=2)"
+json.dump(d,open(p,'w'),indent=2); open(p,'a').write(chr(10))"
       osascript -e 'display notification "$SLUG crashed after $MAX_FAILS wakes. Nothing is running." with title "nightshift" sound name "Basso"' 2>/dev/null || true
       break
     fi
@@ -353,7 +496,7 @@ exec bash
 RUNNER_EOF
 chmod +x "$RUNNER"
 
-say "launching '$SLUG' in tmux session '$SESSION'"
+say "launching '$SLUG' in tmux session '$SESSION' (provider: $PROVIDER)"
 # caffeinate -i prevents idle sleep for the whole supervised tree. Without it the
 # first closed lid ends the run.
 tmux new-session -d -s "$SESSION" -c "$WORKTREE" "caffeinate -i bash '$RUNNER'"
@@ -361,11 +504,12 @@ beat RUNNING
 
 cat <<EOF
 
-  PM '$SLUG' is running.
+  PM '$SLUG' is running via $PROVIDER.
 
     watch      tmux attach -t $SESSION      (detach: ctrl-b then d)
     status     bash $SKILL_DIR/scripts/pm-status.sh
     stop       bash $SKILL_DIR/scripts/pm-launch.sh $SLUG --stop
+    provider   bash $SKILL_DIR/scripts/pm-launch.sh $SLUG --provider claude|codex|cursor
 
   wake interval ${INTERVAL}s. it stops on its own at READY-FOR-HUMAN or DONE.
 

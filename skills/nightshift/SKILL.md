@@ -162,12 +162,19 @@ dispatch or the brief was under-specified; park it and say so.
 ```bash
 bash <plugin>/skills/nightshift/scripts/pm-provision.sh <slug> "<brief>" <packages>
 bash <plugin>/skills/nightshift/scripts/pm-launch.sh <slug>          # PM_WORKFLOWS=1 to enable
+# Optional: --provider codex|cursor|claude  (or PM_PROVIDER=...) when Claude is unavailable
 ```
 
 Run these yourself with `dangerouslyDisableSandbox: true`. You do not need the human's
 terminal. Package installs cannot write `~/.npm/_cacache` from inside a sandbox and tmux
 cannot reach its socket, but both work fine unsandboxed, and at kickoff the human is
 present to approve that one call.
+
+**Provider switch (manual, per PM).** Default is `claude`. To keep a PM going when Claude
+is out of tokens: `pm-launch.sh <slug> --provider codex` (or `cursor`). The choice is
+persisted on the registry claim. Non-Claude wakes still read the ledger and do one unit
+of work; they do not get Claude's `Agent` / `Workflow` tools or nightshift skill
+auto-load. Prefer `--once` after switching before leaving the loop unsupervised.
 
 Measured: `npm install` unsandboxed returns exit 0 and writes the cache normally. An
 earlier version of this file claimed setup required a human's terminal. That was wrong,
@@ -201,8 +208,9 @@ Tell the human, briefly:
 
 - what is running, on which branch, in which worktree
 - that `down` then `enter` opens the watcher in the footer, from right where they are
-- `bash <plugin>/skills/nightshift/scripts/pm-status.sh` to check on it
+- `bash <plugin>/skills/nightshift/scripts/pm-status.sh` to check on it (shows `[provider]`)
 - `bash <plugin>/skills/nightshift/scripts/pm-launch.sh <slug> --stop` to stop it
+- `bash <plugin>/skills/nightshift/scripts/pm-launch.sh <slug> --provider codex|cursor|claude` to switch inference
 - that it will stop on its own at `READY-FOR-HUMAN` or `DONE`
 - anything you already know will block it
 
@@ -690,7 +698,7 @@ Before touching the repo, claim your slot:
 ```bash
 cd <your repo>
 bash <plugin>/skills/nightshift/scripts/pm-provision.sh <slug> "<brief>" [api client ...]
-bash <plugin>/skills/nightshift/scripts/pm-launch.sh <slug>
+bash <plugin>/skills/nightshift/scripts/pm-launch.sh <slug>   # add --provider codex|cursor if needed
 bash <plugin>/skills/nightshift/scripts/pm-status.sh      # every PM on one screen
 ```
 
