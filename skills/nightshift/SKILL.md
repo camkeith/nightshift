@@ -110,8 +110,15 @@ radius, resolve it here. That is the whole point of the one question you get.
 ### 3b. If the human does not answer
 
 A question that blocks forever is its own failure. `askUserQuestionTimeout` (a Claude Code
-setting, `60s` / `5m` / `10m`) auto-continues with whatever is selected when it fires. It
-defaults to `never`, so if it is unset a question hangs until the run ages out.
+setting, `60s` / `5m` / `10m`) auto-continues with whatever is selected when it fires, and
+defaults to `never`, so left alone a question hangs until the run ages out.
+
+**You do not need to configure this, and nightshift does not change your settings.**
+`pm-launch.sh` passes `askUserQuestionTimeout: 60s` into every wake via `--settings`, so
+it applies to PM wakes and nothing else. Your own interactive sessions are untouched.
+
+60s is the shortest the enum allows and still generous: during a wake nobody is there, so
+waiting cannot produce an answer. It only converts a bug into a stall.
 
 **What "continue" means depends entirely on what was being asked**, and getting this
 backwards is expensive:

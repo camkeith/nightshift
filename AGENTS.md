@@ -116,6 +116,9 @@ wrong cause.
   measured run produced 23 fabricated failures and silently skipped ~86 tests.
 - **Never diagnose infrastructure from error text alone**, and never run a remedy an error
   message suggests when the cause might be environmental.
+- **nightshift never modifies your settings.** Wake-scoped behavior (`askUserQuestionTimeout: 60s`,
+  and `ultracode` when `PM_WORKFLOWS=1`) is passed per invocation with `--settings`. It applies to
+  PM wakes and nothing else, needs no setup, and cannot drift out of sync with what the docs claim.
 - **Use `grep -R`, not `grep -r`.** On macOS `-r` does not follow symlinks while recursing
   and returns silent false negatives.
 
