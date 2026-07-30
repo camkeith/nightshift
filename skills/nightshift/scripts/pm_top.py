@@ -3,13 +3,18 @@
 
 Layout is a split: PM list on the left, detail on the right, aggregate header on top.
 
-    ^/v  scroll detail (or select worker on WORKERS list; keeps selection on screen)
-    <>   cycle pane      enter  open worker / toggle focus
-    i    message PM      a      attach (tmux)   w      wake now
-    s    stop PM         r      refresh         q      quit
-    esc  back out: cancels a prompt, leaves a worker, clears the selection
-    home/end/pgup/pgdn   jump in the detail pane
-    mouse: click PMs/tabs/workers/footer; wheel scrolls detail; click worker title to go back
+Navigation (one focus at a time — shown in the header as [PMs] / [agents] / [scroll]):
+
+    Tab        switch focus: left PMs ↔ right pane
+    ↑/↓  j/k   move in the focused region (PMs, agents, or scroll)
+    n / p      next / previous PM (always, any focus)
+    [ / ]      cycle LEDGER → WORKERS → OUTPUT
+    Enter      open selected agent (on WORKERS); from PMs, jump to WORKERS
+    Esc / ←    back: close agent → agents list → focus PMs
+    →          focus the right pane
+    1-9        jump to PM by number
+    i msg  a attach  w wake  s stop  r refresh  q quit
+    mouse      click PMs / tabs / agents; wheel scrolls (or moves PMs over the list)
 
 Worker detail shows Claude sessionId + agentId + transcript path so you can open
 the same chat from a terminal (e.g. `less <path>` or `claude --resume <sessionId>`).
@@ -920,6 +925,62 @@ def run_detached(args):
         return False
 
 
+# ---------------------------------------------------------------- navigation helpers
+
+def focus_label(S):
+    """What ↑/↓ will move right now."""
+    if S.get("focus") == "list":
+        return "PMs"
+    if S.get("wopen") is not None:
+        return "scroll"
+    if S.get("pane") == 1 and S.get("_ws"):
+        return "agents"
+    return "scroll"
+
+
+def move_pm(S, delta):
+    pms = S.get("pms") or []
+    if not pms:
+        return
+    S["sel"] = max(0, min(len(pms) - 1, S.get("sel", 0) + delta))
+    S["scroll"] = 0
+    S["wsel"] = 0
+    S["wopen"] = None
+
+
+def move_worker(S, delta):
+    ws = S.get("_ws") or []
+    if not ws:
+        return
+    S["wsel"] = max(0, min(len(ws) - 1, S.get("wsel", 0) + delta))
+
+
+def nav_vertical(S, delta):
+    """↑/↓: always move the focused region."""
+    if S.get("focus") == "list":
+        move_pm(S, delta)
+        return
+    if S.get("wopen") is not None:
+        S["scroll"] = max(0, S.get("scroll", 0) + delta)
+        return
+    if S.get("pane") == 1 and S.get("_ws"):
+        move_worker(S, delta)
+        return
+    S["scroll"] = max(0, S.get("scroll", 0) + delta)
+
+
+def nav_back(S):
+    """Esc/←: close agent → focus PMs."""
+    if S.get("wopen") is not None:
+        S["wopen"], S["scroll"] = None, 0
+        S["focus"] = "detail"
+        return True
+    if S.get("focus") != "list":
+        S["focus"] = "list"
+        return True
+    return False
+
+
 # ---------------------------------------------------------------- drawing
 
 def hline(scr, y, x, n, ch="─", attr=0):
@@ -955,7 +1016,7 @@ def wrap(items, width):
 def draw(stdscr, S):
     stdscr.erase()
     # Rebuilt every frame so hit-testing can never drift from what is on screen.
-    S["hits"] = {"pms": [], "tabs": [], "keys": [], "workers": [], "detail": None, "back": None}
+    S["hits"] = {"pms": [], "tabs": [], "keys": [], "workers": [], "detail": None, "back": None, "list": None}
     h, w = stdscr.getmaxyx()
     pms, sel, pane, scroll, focus = (S[k] for k in ("pms", "sel", "pane", "scroll", "focus"))
     C = curses.color_pair
@@ -971,6 +1032,10 @@ def draw(stdscr, S):
     if n_need: stats += f"  ·  {n_need} need you"
     if cost:   stats += f"  ·  ${cost:.2f}"
     put(stdscr, 0, len(title) + 2, stats, C(C_MUTED))
+    fl = focus_label(S)
+    focus_chip = f"[{fl}]"
+    put(stdscr, 0, max(len(title) + 2 + len(stats) + 2, w - len(focus_chip) - 10),
+        focus_chip, C(C_CYAN) | BOLD)
     put(stdscr, 0, w - 10, S.get("flash", "")[:8], C(C_GREEN) | BOLD)
     hline(stdscr, 1, 0, w, "─", C(C_MUTED))
 
@@ -981,18 +1046,25 @@ def draw(stdscr, S):
 
     LW = max(26, min(38, w // 3))
     body_top, body_bot = 2, h - 2
+    list_focused = focus == "list"
 
     # ---- left: PM list ----
     y = body_top
+    put(stdscr, y, 2, "PMs" + (" ◀" if list_focused else ""),
+        (C(C_CYAN) | BOLD) if list_focused else C(C_MUTED))
+    y += 1
     for i, p in enumerate(pms):
         if y >= body_bot - 1:
             break
         tag, col = badge(p)
         cur = i == sel
-        marker = "▐" if cur else " "
+        marker = "▶" if cur and list_focused else ("▐" if cur else " ")
         attr = (BOLD if cur else 0) | C(col)
+        if cur and not list_focused:
+            attr = C(col)  # selected but not focused: still visible, less loud
         put(stdscr, y, 0, marker, C(C_CYAN) | BOLD if cur else 0)
-        put(stdscr, y, 2, f"{p.get('slug','?')[:LW-12]:<{LW-12}}", attr)
+        num = f"{i+1}." if i < 9 else "  "
+        put(stdscr, y, 2, f"{num}{p.get('slug','?')[:LW-14]:<{LW-14}}", attr)
         put(stdscr, y, LW - 9, f"{age(p.get('heartbeat','')):>4}", C(C_MUTED))
         y1 = y
         y += 1
@@ -1008,9 +1080,10 @@ def draw(stdscr, S):
         S["hits"]["pms"].append((y1, y, 0, LW - 1, i))  # both lines, left pane only
         y += 2
 
+    div = "┃" if list_focused else "│"
     for yy in range(body_top, body_bot):
-        put(stdscr, yy, LW, "│", C(C_MUTED))
-
+        put(stdscr, yy, LW, div, C(C_CYAN) if list_focused else C(C_MUTED))
+    S["hits"]["list"] = (body_top, body_bot - 1, 0, LW - 1)
     # ---- right: detail ----
     p = pms[sel]
     RX = LW + 2
@@ -1069,11 +1142,17 @@ def draw(stdscr, S):
         fy += 1
     ty = fy + 1
     x = RX
+    detail_focused = not list_focused
     for i, nm in enumerate(PANES):
         on = i == pane
-        put(stdscr, ty, x, f" {nm} ", (C(C_CYAN) | BOLD) if on else C(C_MUTED))
-        S["hits"]["tabs"].append((ty, x, x + len(nm) + 2, i))
-        x += len(nm) + 3
+        # Right-side focus marker on the active tab.
+        label = f" {nm} "
+        if on and detail_focused:
+            label = f" {nm} ◀"
+        put(stdscr, ty, x, label,
+            (C(C_CYAN) | BOLD) if on else C(C_MUTED))
+        S["hits"]["tabs"].append((ty, x, x + len(label), i))
+        x += len(label) + 1
     hline(stdscr, ty + 1, RX, RW, "─", C(C_MUTED))
 
     if pane == 0:
@@ -1112,7 +1191,7 @@ def draw(stdscr, S):
                      (f"session  {sid or '?'}", 0, C_CYAN),
                      (f"agent    {aid or '?'}", 0, C_CYAN),
                      (f"path     {f}", DIM, 0),
-                     ("^/v or pgup/pgdn scroll this log   esc or <- back to list", DIM, 0),
+                     ("↑↓ scroll   esc/← back to agents   tab PMs", DIM, 0),
                      ("", 0, 0)]
             g = worker_goal(f)
             if g:
@@ -1138,8 +1217,8 @@ def draw(stdscr, S):
                 items.append(("", 0, 0))
         else:
             wsel = S.get("wsel", 0)
-            items = [(f"{len(ws)} worker(s), newest first"
-                      "     click/^v select   enter/double-click open", BOLD, C_HEAD, None),
+            items = [(f"{len(ws)} agent(s), newest first"
+                      "     ↑↓ select   enter open   tab PMs", BOLD, C_HEAD, None),
                      ("", 0, 0, None)]
             for i, (mt, sz, f) in enumerate(ws[:40]):
                 cur = i == wsel
@@ -1209,25 +1288,21 @@ def draw(stdscr, S):
 
     # ---- footer ----
     hline(stdscr, h - 2, 0, w, "─", C(C_MUTED))
-    if S.get("wopen") is not None:
-        nav = ("^v", "scroll")
-    elif pane == 1 and S.get("_ws"):
-        nav = ("^v", "worker")
-    elif pane in (0, 2):
-        nav = ("^v", "scroll")
-    else:
-        nav = ("^v", "pm")
-    keys = [nav, ("<>", "pane"), ("enter", "open"), ("i", "msg"),
-            ("a", "attach"), ("w", "wake"), ("s", "stop"), ("q", "quit")]
+    fl = focus_label(S)
+    keys = [("↑↓", fl), ("tab", "side"), ("n/p", "pm"), ("[/]", "pane"),
+            ("ret", "open"), ("esc", "back"),
+            ("i", "msg"), ("a", "attach"), ("w", "wake"), ("q", "quit")]
     x = 1
     for k, lbl in keys:
+        if x + len(k) + len(lbl) + 3 >= w:
+            break
         start = x
         put(stdscr, h - 1, x, k, C(C_CYAN) | BOLD); x += len(k) + 1
-        put(stdscr, h - 1, x, lbl, C(C_MUTED));     x += len(lbl) + 3
-        S["hits"]["keys"].append((h - 1, start, x - 3, k))
+        put(stdscr, h - 1, x, lbl, C(C_MUTED));     x += len(lbl) + 2
+        # Only single-letter actions are clickable via ungetch.
+        if len(k) == 1:
+            S["hits"]["keys"].append((h - 1, start, x - 2, k))
     stdscr.refresh()
-
-
 # ---------------------------------------------------------------- main
 
 def _in_box(my, mx, box):
@@ -1294,15 +1369,31 @@ def main(stdscr, repo, skill_dir):
                 continue
             detail = S["hits"].get("detail")
             over_detail = _in_box(my, mx, detail)
+            over_list = _in_box(my, mx, S["hits"].get("list"))
 
             if bst & curses.BUTTON4_PRESSED:          # wheel up
-                if over_detail or detail:
-                    S["scroll"] = max(0, S["scroll"] - 3)
+                if over_list:
+                    move_pm(S, -1)
+                    S["focus"] = "list"
+                else:
+                    # On agents list, wheel moves selection; otherwise scroll.
+                    if (S.get("pane") == 1 and S.get("wopen") is None and S.get("_ws")
+                            and S.get("focus") != "list"):
+                        move_worker(S, -1)
+                    else:
+                        S["scroll"] = max(0, S["scroll"] - 3)
                     S["focus"] = "detail"
                 continue
             if bst & WHEEL_DOWN:                      # wheel down
-                if over_detail or detail:
-                    S["scroll"] += 3
+                if over_list:
+                    move_pm(S, 1)
+                    S["focus"] = "list"
+                else:
+                    if (S.get("pane") == 1 and S.get("wopen") is None and S.get("_ws")
+                            and S.get("focus") != "list"):
+                        move_worker(S, 1)
+                    else:
+                        S["scroll"] += 3
                     S["focus"] = "detail"
                 continue
             if not (bst & BTN1):
@@ -1363,66 +1454,88 @@ def main(stdscr, repo, skill_dir):
             if handled:
                 continue
 
-            # Click in detail pane focuses it for keyboard scroll
+            # Click in detail pane focuses it for keyboard nav
             if over_detail:
                 S["focus"] = "detail"
+            elif over_list:
+                S["focus"] = "list"
             continue
 
         if k in (ord("q"), ord("Q")):
             return
         elif k in (ord("r"), ord("R")):
             S["last"] = 0
-        elif k in (curses.KEY_RIGHT, 9):
-            # <-/-> always cycle panes. Nothing else competes for them, which was the
-            # confusion in the first version: arrows meant three things by context.
-            S["pane"] = (S["pane"] + 1) % 3
-            S["scroll"], S["wsel"], S["wopen"] = 0, 0, None
-        elif k == curses.KEY_LEFT:
-            if S.get("wopen") is not None:
-                S["wopen"], S["scroll"] = None, 0        # leave the worker, not the pane
-            else:
-                S["pane"] = (S["pane"] - 1) % 3
-                S["scroll"], S["wsel"] = 0, 0
-        elif k == 27:
+        elif k == 9:  # Tab: switch side
+            S["focus"] = "detail" if S.get("focus") == "list" else "list"
+        elif k in (ord("["),):
             if S.get("wopen") is not None:
                 S["wopen"], S["scroll"] = None, 0
+            else:
+                S["pane"] = (S["pane"] - 1) % 3
+                S["scroll"], S["wsel"], S["wopen"] = 0, 0, None
+                S["focus"] = "detail"
+        elif k in (ord("]"),):
+            S["pane"] = (S["pane"] + 1) % 3
+            S["scroll"], S["wsel"], S["wopen"] = 0, 0, None
+            S["focus"] = "detail"
+        elif k in (curses.KEY_RIGHT, ord("l")):
+            S["focus"] = "detail"
+        elif k in (curses.KEY_LEFT, ord("h")):
+            nav_back(S)
+        elif k == 27:  # Esc
+            if not nav_back(S):
+                S["focus"] = "list"
+        elif k in (ord("n"), ord("N")):
+            move_pm(S, 1)
+            S["focus"] = "list"
+        elif k in (ord("p"), ord("P")):
+            # p = previous PM; capital-P was unused. (lowercase p also = prev)
+            move_pm(S, -1)
+            S["focus"] = "list"
+        elif ord("1") <= k <= ord("9"):
+            idx = k - ord("1")
+            if idx < len(pms):
+                S["sel"], S["scroll"] = idx, 0
+                S["wsel"], S["wopen"] = 0, None
+                S["focus"] = "list"
         elif k in (curses.KEY_DOWN, ord("j")):
-            # Worker detail / ledger / output: arrows scroll the right pane.
-            # Workers list: arrows move the selection (draw keeps it on screen).
-            # Left PM list only when focus is still "list" and we are not in workers.
-            if S.get("wopen") is not None or S["pane"] in (0, 2) or S["focus"] == "detail":
-                S["scroll"] += 1
-            elif S["pane"] == 1 and S.get("_ws"):
-                S["wsel"] = min(S.get("wsel", 0) + 1, len(S["_ws"]) - 1)
-            elif S["focus"] == "list":
-                S["sel"] = min(sel + 1, max(0, len(pms) - 1))
-                S["scroll"], S["wsel"], S["wopen"] = 0, 0, None
-            else:
-                S["scroll"] += 1
+            nav_vertical(S, 1)
         elif k in (curses.KEY_UP, ord("k")):
-            if S.get("wopen") is not None or S["pane"] in (0, 2) or S["focus"] == "detail":
-                S["scroll"] = max(0, S["scroll"] - 1)
-            elif S["pane"] == 1 and S.get("_ws"):
-                S["wsel"] = max(S.get("wsel", 0) - 1, 0)
-            elif S["focus"] == "list":
-                S["sel"] = max(sel - 1, 0)
-                S["scroll"], S["wsel"], S["wopen"] = 0, 0, None
-            else:
-                S["scroll"] = max(0, S["scroll"] - 1)
+            nav_vertical(S, -1)
         elif k in (curses.KEY_ENTER, 10, 13):
-            if S["pane"] == 1 and S.get("_ws"):
-                S["wopen"] = S.get("wsel", 0) if S.get("wopen") is None else None
+            if S.get("focus") == "list":
+                # Jump into this PM's agents pane.
+                S["pane"], S["scroll"], S["focus"] = 1, 0, "detail"
+                S["wopen"] = None
+            elif S["pane"] == 1 and S.get("_ws"):
+                if S.get("wopen") is None:
+                    S["wopen"] = S.get("wsel", 0)
+                else:
+                    S["wopen"] = None
                 S["scroll"] = 0
             else:
-                S["focus"] = "detail" if S["focus"] == "list" else "list"
+                S["focus"] = "detail"
         elif k == curses.KEY_NPAGE:
-            S["scroll"] += 20
+            if S.get("focus") == "list":
+                move_pm(S, 5)
+            else:
+                S["scroll"] += 20
         elif k == curses.KEY_PPAGE:
-            S["scroll"] = max(0, S["scroll"] - 20)
+            if S.get("focus") == "list":
+                move_pm(S, -5)
+            else:
+                S["scroll"] = max(0, S["scroll"] - 20)
         elif k == curses.KEY_HOME:
-            S["scroll"] = 0
+            if S.get("focus") == "list":
+                S["sel"], S["scroll"], S["wsel"], S["wopen"] = 0, 0, 0, None
+            else:
+                S["scroll"] = 0
         elif k == curses.KEY_END:
-            S["scroll"] = 10**9   # draw clamps to the bottom
+            if S.get("focus") == "list" and pms:
+                S["sel"] = len(pms) - 1
+                S["scroll"], S["wsel"], S["wopen"] = 0, 0, None
+            else:
+                S["scroll"] = 10**9   # draw clamps to the bottom
 
         elif k == ord("i") and p:
             msg = prompt(stdscr, f"message to {p['slug']} (esc cancels):")
