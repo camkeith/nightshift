@@ -79,7 +79,8 @@ kickoff needs you.
 ```bash
 NS=~/.claude/skills/nightshift/scripts
 
-bash $NS/pm-status.sh                    # every PM, blockers first. the breakfast view
+bash $NS/pm-top.sh                       # interactive: drill into a PM, its workers, its output
+bash $NS/pm-status.sh                    # one-shot snapshot, blockers first
 bash $NS/pm-launch.sh <slug> --stop      # stop one
 ```
 
@@ -97,6 +98,8 @@ control. They need the sandbox disabled, so either a terminal or an agent with a
 | `pm-launch.sh <slug> --once` | One wake in the foreground. Do this before trusting the loop |
 | `pm-launch.sh <slug> --stop` | Stop that PM |
 | `pm-status.sh [slug]` | Every PM on one screen, blockers first |
+| `pm-top.sh` | Interactive. Arrow through PMs, enter to open, tab between ledger / workers / output |
+| `pm-teardown.sh <slug>` | Retire a PM safely: stop, remove, prune, mark done |
 
 `PM_WORKFLOWS=1` before `pm-launch.sh` grants the PM standing Workflow orchestration. Off
 by default on cost grounds, not capability: a PM wakes at least 24 times a day, and it
