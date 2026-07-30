@@ -302,16 +302,18 @@ run_one_wake() {
       ;;
     codex)
       # Unattended: full bypass. workspace-write is not enough for package installs / tests.
+      # stdin must be /dev/null: when a prompt is also passed, a live/piped stdin makes
+      # codex wait on "Reading additional input from stdin..." and stall the wake.
       codex exec --json \
         --dangerously-bypass-approvals-and-sandbox \
         -C "$WORKTREE" \
-        "$WAKE_PROMPT" > "$OUT" || rc=$?
+        "$WAKE_PROMPT" < /dev/null > "$OUT" || rc=$?
       ;;
     cursor)
       cursor-agent -p --force --trust --sandbox disabled \
         --workspace "$WORKTREE" \
         --output-format json \
-        "$WAKE_PROMPT" > "$OUT" || rc=$?
+        "$WAKE_PROMPT" < /dev/null > "$OUT" || rc=$?
       ;;
   esac
 
