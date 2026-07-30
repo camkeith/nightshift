@@ -29,6 +29,7 @@ SKILL_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 
 INTERVAL="${PM_INTERVAL:-300}"      # seconds between wakes
 MAX_FAILS="${PM_MAX_FAILS:-5}"      # consecutive failures before giving up
+MAX_STAGNANT="${PM_MAX_STAGNANT:-5}" # wakes with no progress before stopping
 
 die() { printf '\033[31merror:\033[0m %s\n' "$*" >&2; exit 1; }
 say() { printf '\033[36m==>\033[0m %s\n' "$*"; }
@@ -100,13 +101,44 @@ run_one_wake() {
   # Do NOT set CI or GITHUB_ACTIONS: those resolve to `headless`, which makes gstack
   # BLOCK on an AskUserQuestion failure rather than auto-choosing. That is worse than
   # doing nothing.
+  # --output-format json so the wake reports total_cost_usd exactly. Without this a
+  # PM's spend is invisible until the bill: it wakes >=24x/day, each wake fans out, and
+  # PM_WORKFLOWS multiplies that again. An unattended system that can quietly cost money
+  # needs the number surfaced, not estimated.
+  OUT="$WORKTREE/.nightshift-wake.json"
   if [ "${PM_WORKFLOWS:-0}" = "1" ]; then
     OPENCLAW_SESSION=true PM_SLUG="$SLUG" \
-      claude -p "$WAKE_PROMPT" --settings "$WORKFLOW_SETTINGS"
+      claude -p "$WAKE_PROMPT" --settings "$WORKFLOW_SETTINGS" --output-format json > "$OUT"
   else
     OPENCLAW_SESSION=true PM_SLUG="$SLUG" \
-      claude -p "$WAKE_PROMPT"
+      claude -p "$WAKE_PROMPT" --output-format json > "$OUT"
   fi
+  rc=$?
+  CLAIM="$CLAIM" OUT="$OUT" python3 -c '
+import json, os
+claim, out = os.environ["CLAIM"], os.environ["OUT"]
+try:
+    d = json.load(open(out))
+    r = next(o for o in d if o.get("type") == "result")
+except Exception:
+    raise SystemExit
+c = json.load(open(claim))
+c["wakes"] = c.get("wakes", 0) + 1
+c["cost_usd"] = round(c.get("cost_usd", 0.0) + float(r.get("total_cost_usd") or 0), 4)
+c["last_wake_cost_usd"] = round(float(r.get("total_cost_usd") or 0), 4)
+c["last_wake_turns"] = r.get("num_turns")
+json.dump(c, open(claim, "w"), indent=2); open(claim, "a").write("\n")
+' 2>/dev/null || true
+  # Surface the wake's own text so the tmux pane stays readable.
+  python3 -c '
+import json,sys
+try:
+    d=json.load(open(sys.argv[1]))
+    r=next(o for o in d if o.get("type")=="result")
+    print(r.get("result","")[:2000])
+except Exception: pass
+' "$OUT" 2>/dev/null || true
+  return $rc
 }
 
 # Stamp the heartbeat AND the ledger's LAST WAKE line.
@@ -191,6 +223,8 @@ cat > "$RUNNER" <<RUNNER_EOF
 set -uo pipefail
 fails=0
 wake=0
+stagnant=0
+LAST_SIG=""
 while true; do
   # Check for a terminal state BEFORE waking, not only after.
   #
@@ -209,6 +243,28 @@ while true; do
     fi
     printf '\033[32m%s\033[0m\n' "\$MSG"
     osascript -e "display notification \"\$MSG\" with title \"nightshift\" sound name \"Glass\"" 2>/dev/null || true
+    break
+  fi
+
+  # No-progress detection. The expensive silent failure is not a crash, it is a PM that
+  # wakes, does something useless, writes a log line, and looks healthy forever. Nothing
+  # else in this loop catches that: STATUS stays RUNNING, the heartbeat keeps ticking,
+  # and pm-status shows green while the spend climbs.
+  #
+  # Progress = a new commit on the branch, or a newly checked box in the ledger.
+  SIG=\$(cd "$WORKTREE" && printf '%s|%s' \
+        "\$(git rev-list --count HEAD 2>/dev/null || echo 0)" \
+        "\$(grep -c '^- \[x\]' LEDGER.md 2>/dev/null || echo 0)")
+  if [ "\$SIG" = "\${LAST_SIG:-}" ]; then
+    stagnant=\$((stagnant + 1))
+  else
+    stagnant=0
+  fi
+  LAST_SIG="\$SIG"
+  if [ "\$stagnant" -ge "$MAX_STAGNANT" ]; then
+    MSG="$SLUG made no progress in $MAX_STAGNANT wakes. Stopping so it stops costing money."
+    printf '\033[33m%s\033[0m\n' "\$MSG"
+    osascript -e "display notification \"\$MSG\" with title \"nightshift\" sound name \"Basso\"" 2>/dev/null || true
     break
   fi
 

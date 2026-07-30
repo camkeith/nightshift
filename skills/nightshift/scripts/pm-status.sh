@@ -95,6 +95,9 @@ for path in sorted(glob.glob(os.path.join(reg, "*.json"))):
     d["_blockers"] = section(text, "BLOCKERS", open_only=True)
     d["_qa"] = section(text, "NEEDS-HUMAN-QA", open_only=True)
     d["_decisions"] = section(text, "DECISIONS")
+    inbox = os.path.join(wt, "INBOX.md")
+    itext = open(inbox).read() if os.path.isfile(inbox) else ""
+    d["_inbox"] = len([l for l in itext.splitlines() if l.strip().startswith("- [ ]")])
     wl = section(text, "WAKE LOG")
     d["_last"] = wl[-1].lstrip("- ") if wl else "(no wakes recorded)"
     d["_alive"] = d.get("tmux_session") in live
@@ -142,6 +145,12 @@ for d in records:
             print(f"    {q.strip()}")
     if d["_decisions"]:
         print(f"  {C['d']}{len(d['_decisions'])} decision(s) logged{C['x']}")
+    if d.get("_inbox"):
+        print(f"  {C['c']}{d['_inbox']} unread inbox message(s){C['x']}")
+    if d.get("cost_usd") is not None:
+        w = d.get("wakes", 0) or 0
+        per = (d["cost_usd"] / w) if w else 0
+        print(f"  {C['d']}spend: ${d['cost_usd']:.2f} over {w} wake(s)  (${per:.2f}/wake){C['x']}")
     print(f"  {C['d']}last: {d['_last']}{C['x']}")
     print()
 
@@ -159,6 +168,14 @@ if dead:
     print(f"{C['r']}{len(dead)} PM(s) not running: {', '.join(d['slug'] for d in dead)}{C['x']}")
     print(f"{C['d']}  restart:  bash ~/.claude/skills/nightshift/scripts/pm-launch.sh <slug>{C['x']}")
     print(f"{C['d']}            (needs the sandbox off; an agent can do this with approval){C['x']}")
+total = sum(d.get("cost_usd") or 0 for d in records)
+if total:
+    active = [d for d in records if d["_ledger_status"] not in ("DONE", "STOPPED")]
+    rate = sum(d.get("last_wake_cost_usd") or 0 for d in active) * 12  # ~12 wakes/hr at 300s
+    print(f"{C['d']}total spend across all PMs: ${total:.2f}"
+          + (f"   (~${rate:.2f}/hr at current rate, {len(active)} active)" if active and rate else "")
+          + f"{C['x']}")
+
 if not needs and not dead:
     print(f"{C['g']}all PMs healthy.{C['x']}")
 print()

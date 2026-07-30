@@ -35,7 +35,8 @@ setup happens at kickoff rather than mid-run.
 | `bash scripts/pm-launch.sh <slug>` | Start the supervised loop: tmux + caffeinate + restart wrapper + dead-PM watchdog. |
 | `bash scripts/pm-launch.sh <slug> --once` | Run exactly one wake in the foreground. Use this before trusting the loop. |
 | `bash scripts/pm-launch.sh <slug> --stop` | Stop that PM's tmux session. |
-| `bash scripts/pm-status.sh [slug]` | Every PM on one screen, blockers first. The breakfast view. |
+| `bash scripts/pm-status.sh [slug]` | Every PM on one screen, blockers first, with spend. The breakfast view. |
+| `bash scripts/pm-teardown.sh <slug> [--branch]` | Retire a PM in the only safe order: stop, remove, prune, mark DONE. Refuses if work is uncommitted. |
 | `agents/repo-recon.md` | Agent definition. Generates a repo's `.nightshift/repo-facts.md`. Run once per repo. |
 | `skills/nightshift/SKILL.md` | The PM's own operating manual. A PM reads this, not this file. |
 
