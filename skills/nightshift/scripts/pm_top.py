@@ -9,6 +9,7 @@ Layout is a split: PM list on the left, detail on the right, aggregate header on
     s    stop PM         r      refresh         q      quit
     esc  back out: cancels a prompt, leaves a worker, clears the selection
     home/end/pgup/pgdn   jump in the detail pane
+    mouse: click PMs/tabs/workers/footer; wheel scrolls detail; click worker title to go back
 
 Worker detail shows Claude sessionId + agentId + transcript path so you can open
 the same chat from a terminal (e.g. `less <path>` or `claude --resume <sessionId>`).
@@ -826,20 +827,23 @@ def put(scr, y, x, text, attr=0, maxw=None):
 
 
 def wrap(items, width):
+    """Wrap (text, attr, col[, tag]) rows. Optional tag is preserved for mouse hit-testing."""
     out = []
-    for text, attr, col in items:
+    for row in items:
+        text, attr, col = row[0], row[1], row[2]
+        tag = row[3] if len(row) > 3 else None
         if not text:
-            out.append(("", attr, col)); continue
+            out.append(("", attr, col, tag)); continue
         indent = len(text) - len(text.lstrip())
         for i, seg in enumerate(textwrap.wrap(text.strip(), max(10, width)) or [""]):
-            out.append((" " * indent + ("" if i == 0 else "  ") + seg, attr, col))
+            out.append((" " * indent + ("" if i == 0 else "  ") + seg, attr, col, tag))
     return out
 
 
 def draw(stdscr, S):
     stdscr.erase()
     # Rebuilt every frame so hit-testing can never drift from what is on screen.
-    S["hits"] = {"pms": [], "tabs": [], "keys": []}
+    S["hits"] = {"pms": [], "tabs": [], "keys": [], "workers": [], "detail": None, "back": None}
     h, w = stdscr.getmaxyx()
     pms, sel, pane, scroll, focus = (S[k] for k in ("pms", "sel", "pane", "scroll", "focus"))
     C = curses.color_pair
@@ -876,9 +880,9 @@ def draw(stdscr, S):
         marker = "▐" if cur else " "
         attr = (BOLD if cur else 0) | C(col)
         put(stdscr, y, 0, marker, C(C_CYAN) | BOLD if cur else 0)
-        S["hits"]["pms"].append((y, y + 1, i))
         put(stdscr, y, 2, f"{p.get('slug','?')[:LW-12]:<{LW-12}}", attr)
         put(stdscr, y, LW - 9, f"{age(p.get('heartbeat','')):>4}", C(C_MUTED))
+        y1 = y
         y += 1
         put(stdscr, y, 2, tag, C(col))
         extra = []
@@ -889,6 +893,7 @@ def draw(stdscr, S):
             put(stdscr, y, 2 + len(tag) + 1, " ".join(extra), C(C_AMBER))
         c = p.get("cost_usd")
         if c: put(stdscr, y, LW - 9, f"${c:>6.2f}", C(C_MUTED))
+        S["hits"]["pms"].append((y1, y, 0, LW - 1, i))  # both lines, left pane only
         y += 2
 
     for yy in range(body_top, body_bot):
@@ -1017,7 +1022,8 @@ def draw(stdscr, S):
         else:
             wsel = S.get("wsel", 0)
             items = [(f"{len(ws)} worker(s), newest first"
-                      "     ^/v select   enter open", BOLD, C_HEAD), ("", 0, 0)]
+                      "     click/^v select   enter/double-click open", BOLD, C_HEAD, None),
+                     ("", 0, 0, None)]
             for i, (mt, sz, f) in enumerate(ws[:40]):
                 cur = i == wsel
                 mark = "> " if cur else "  "
@@ -1028,29 +1034,34 @@ def draw(stdscr, S):
                        f" cache {fmt_tokens(u.get('cache_r',0))}"
                 items.append((f"{mark}{time.strftime('%H:%M:%S', time.localtime(mt))}  "
                               f"{os.path.basename(f)[:26]}",
-                              BOLD if cur else 0, C_CYAN if cur else C_MUTED))
-                items.append(("    " + meta, DIM, C_GREEN if cur else 0))
+                              BOLD if cur else 0, C_CYAN if cur else C_MUTED, i))
+                items.append(("    " + meta, DIM, C_GREEN if cur else 0, i))
                 id_line = "    "
                 if sid:
                     id_line += f"session {sid[:8]}…  " if len(sid) > 12 else f"session {sid}  "
                 if aid:
                     id_line += f"agent {aid}"
                 if sid or aid:
-                    items.append((id_line.rstrip(), DIM, C_CYAN if cur else 0))
+                    items.append((id_line.rstrip(), DIM, C_CYAN if cur else 0, i))
                 g = worker_goal(f, 160).replace("\n", " ")
                 if g:
-                    items.append(("    goal: " + g, DIM, C_HEAD))
-                items.append(("    last: " + last_text(f, 180).replace("\n", " "), DIM, 0))
-                items.append(("", 0, 0))
+                    items.append(("    goal: " + g, DIM, C_HEAD, i))
+                items.append(("    last: " + last_text(f, 180).replace("\n", " "), DIM, 0, i))
+                items.append(("", 0, 0, i))
     else:
-        items = [(l, 0, 0) for l in output_for(p)]
+        items = [(l, 0, 0, None) for l in output_for(p)]
+
+    # Tag ledger/worker-detail rows as None (scroll-only); worker list rows carry widx.
+    if pane == 0 or (pane == 1 and S.get("wopen") is not None):
+        items = [(*row[:3], None) if len(row) == 3 else row for row in items]
 
     wrapped = wrap(items, RW)
     view_h = body_bot - (ty + 2)
     # Keep the selected worker row on screen. Without this, ^/v moves wsel into
     # rows below the fold and the arrows look dead.
     if pane == 1 and S.get("wopen") is None and S.get("_ws"):
-        for i, (text, _, _) in enumerate(wrapped):
+        for i, row in enumerate(wrapped):
+            text = row[0]
             if text.startswith("> "):
                 if i < scroll:
                     scroll = i
@@ -1059,8 +1070,20 @@ def draw(stdscr, S):
                 break
     scroll = max(0, min(scroll, max(0, len(wrapped) - view_h)))
     S["scroll"] = scroll
-    for i, (text, attr, c) in enumerate(wrapped[scroll:scroll + view_h]):
-        put(stdscr, ty + 2 + i, RX, text, attr | (C(c) if c else 0), RW)
+    detail_top = ty + 2
+    detail_bot = body_bot - 1
+    S["hits"]["detail"] = (detail_top, detail_bot, RX, w - 1)
+    # Title line is a clickable "back" when drilled into a worker.
+    if pane == 1 and S.get("wopen") is not None:
+        S["hits"]["back"] = (detail_top, detail_top, RX, w - 1)
+
+    for i, row in enumerate(wrapped[scroll:scroll + view_h]):
+        text, attr, c = row[0], row[1], row[2]
+        tag = row[3] if len(row) > 3 else None
+        sy = detail_top + i
+        put(stdscr, sy, RX, text, attr | (C(c) if c else 0), RW)
+        if tag is not None and pane == 1 and S.get("wopen") is None:
+            S["hits"]["workers"].append((sy, sy, RX, w - 1, tag))
 
     if len(wrapped) > view_h:
         pct = int(100 * scroll / max(1, len(wrapped) - view_h))
@@ -1089,15 +1112,25 @@ def draw(stdscr, S):
 
 # ---------------------------------------------------------------- main
 
+def _in_box(my, mx, box):
+    """box is (y0, y1, x0, x1) inclusive."""
+    if not box:
+        return False
+    y0, y1, x0, x1 = box
+    return y0 <= my <= y1 and x0 <= mx <= x1
+
+
 def main(stdscr, repo, skill_dir):
     curses.curs_set(0)
     stdscr.nodelay(True)
-    # Mouse: click a PM, a pane tab, or a footer key; wheel scrolls the detail pane.
+    # Mouse: click PMs / tabs / workers / footer; wheel scrolls the detail pane.
     # BUTTON5 is wheel-down on most terminals but is absent from some curses builds, so
     # it is resolved defensively rather than referenced directly.
     try:
         curses.mousemask(curses.ALL_MOUSE_EVENTS | curses.REPORT_MOUSE_POSITION)
-        print("\033[?1003l\033[?1000h", end="", flush=True)   # click reporting, not motion
+        curses.mouseinterval(200)
+        # 1000=click, 1002=button-event (better wheel), 1006=SGR, 1007=alternate scroll
+        print("\033[?1003l\033[?1000h\033[?1002h\033[?1006h\033[?1007h", end="", flush=True)
     except Exception:
         pass
     curses.start_color()
@@ -1112,11 +1145,15 @@ def main(stdscr, repo, skill_dir):
 
     S = {"pms": load_pms(repo), "sel": 0, "pane": 0, "scroll": 0,
          "focus": "list", "last": 0.0, "flash": "", "flash_at": 0.0,
-         "hits": {"pms": [], "tabs": [], "keys": []},
-         "wsel": 0, "wopen": None, "_ws": []}
+         "hits": {"pms": [], "tabs": [], "keys": [], "workers": [], "detail": None, "back": None},
+         "wsel": 0, "wopen": None, "_ws": [], "_mclick": None}
     WHEEL_DOWN = getattr(curses, "BUTTON5_PRESSED", 0x200000)
+    BTN1 = (curses.BUTTON1_PRESSED | curses.BUTTON1_CLICKED
+            | getattr(curses, "BUTTON1_DOUBLE_CLICKED", 0)
+            | getattr(curses, "BUTTON1_TRIPLE_CLICKED", 0))
 
-    while True:
+    try:
+      while True:
         if time.time() - S["last"] > REFRESH_SECS:
             S["pms"] = load_pms(repo)
             S["last"] = time.time()
@@ -1137,28 +1174,80 @@ def main(stdscr, repo, skill_dir):
                 _, mx, my, _, bst = curses.getmouse()
             except Exception:
                 continue
+            detail = S["hits"].get("detail")
+            over_detail = _in_box(my, mx, detail)
+
             if bst & curses.BUTTON4_PRESSED:          # wheel up
-                S["scroll"] = max(0, S["scroll"] - 3); continue
-            if bst & WHEEL_DOWN:                      # wheel down
-                S["scroll"] += 3; continue
-            if not (bst & (curses.BUTTON1_PRESSED | curses.BUTTON1_CLICKED)):
+                if over_detail or detail:
+                    S["scroll"] = max(0, S["scroll"] - 3)
+                    S["focus"] = "detail"
                 continue
-            if S["pane"] == 1 and S.get("wopen") is None and mx > (max(26, min(38, stdscr.getmaxyx()[1] // 3))):
-                pass                                  # worker rows are scroll-relative; keys handle them
-            for y0, y1, idx in S["hits"]["pms"]:      # click a PM
-                if y0 <= my <= y1:
-                    S["sel"], S["scroll"], S["focus"] = idx, 0, "list"
+            if bst & WHEEL_DOWN:                      # wheel down
+                if over_detail or detail:
+                    S["scroll"] += 3
+                    S["focus"] = "detail"
+                continue
+            if not (bst & BTN1):
+                continue
+
+            # Footer keys first (ungetch into the normal key path)
+            handled = False
+            for ky, x0, x1, key in S["hits"].get("keys") or []:
+                if my == ky and x0 <= mx <= x1:
+                    curses.ungetch(ord(key[0]))
+                    handled = True
                     break
-            else:
-                for ty_, x0, x1, idx in S["hits"]["tabs"]:   # click a pane tab
-                    if my == ty_ and x0 <= mx <= x1:
-                        S["pane"], S["scroll"] = idx, 0
-                        break
-                else:
-                    for ky, x0, x1, key in S["hits"]["keys"]:  # click a footer key
-                        if my == ky and x0 <= mx <= x1:
-                            curses.ungetch(ord(key[0]))
-                            break
+            if handled:
+                continue
+
+            # PM list (left pane)
+            for y0, y1, x0, x1, idx in S["hits"].get("pms") or []:
+                if y0 <= my <= y1 and x0 <= mx <= x1:
+                    S["sel"], S["scroll"], S["focus"] = idx, 0, "list"
+                    S["wsel"], S["wopen"] = 0, None
+                    handled = True
+                    break
+            if handled:
+                continue
+
+            # Pane tabs
+            for ty_, x0, x1, idx in S["hits"].get("tabs") or []:
+                if my == ty_ and x0 <= mx <= x1:
+                    S["pane"], S["scroll"] = idx, 0
+                    S["wopen"] = None
+                    S["focus"] = "detail"
+                    handled = True
+                    break
+            if handled:
+                continue
+
+            # Back to worker list (title line when drilled in)
+            if _in_box(my, mx, S["hits"].get("back")):
+                S["wopen"], S["scroll"] = None, 0
+                S["focus"] = "detail"
+                continue
+
+            # Worker rows: click selects; click again / double-click opens
+            for y0, y1, x0, x1, widx in S["hits"].get("workers") or []:
+                if not (y0 <= my <= y1 and x0 <= mx <= x1):
+                    continue
+                dbl_flag = bool(bst & getattr(curses, "BUTTON1_DOUBLE_CLICKED", 0))
+                open_it = dbl_flag or (S.get("wsel") == widx)
+                S["_mclick"] = (widx, time.time())
+                S["wsel"] = widx
+                S["focus"] = "detail"
+                S["pane"] = 1
+                if open_it:
+                    S["wopen"] = widx
+                    S["scroll"] = 0
+                handled = True
+                break
+            if handled:
+                continue
+
+            # Click in detail pane focuses it for keyboard scroll
+            if over_detail:
+                S["focus"] = "detail"
             continue
 
         if k in (ord("q"), ord("Q")):
@@ -1250,6 +1339,11 @@ def main(stdscr, repo, skill_dir):
                 S["last"] = 0
             elif ans is None:
                 S["flash"], S["flash_at"] = "cancelled", time.time()
+    finally:
+        try:
+            print("\033[?1007l\033[?1006l\033[?1002l\033[?1000l", end="", flush=True)
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":
