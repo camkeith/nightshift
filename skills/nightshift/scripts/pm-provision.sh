@@ -256,6 +256,13 @@ if [ -f "$WORKTREE/api/.env" ]; then
   grep -v '^TEST_MONGODB_URI=' "$WORKTREE/api/.env" > "$WORKTREE/api/.env.tmp" || true
   mv "$WORKTREE/api/.env.tmp" "$WORKTREE/api/.env"
   printf '\nTEST_MONGODB_URI=mongodb://localhost/%s\n' "$TEST_DB" >> "$WORKTREE/api/.env"
+  # And the DEV database, which matters now that PMs may run their own API for QA.
+  # Without this every PM's dev server writes to the human's real dev data and to each
+  # other's. Port isolation alone does not help: separate processes, one database.
+  grep -v '^MONGODB_URI=' "$WORKTREE/api/.env" > "$WORKTREE/api/.env.tmp" 2>/dev/null || true
+  mv "$WORKTREE/api/.env.tmp" "$WORKTREE/api/.env" 2>/dev/null || true
+  printf 'MONGODB_URI="mongodb://localhost:27017/%s_dev"\n' "$TEST_DB" >> "$WORKTREE/api/.env"
+  say "  dev DB pinned to ${TEST_DB}_dev"
 else
   mkdir -p "$WORKTREE/api"
   printf 'TEST_MONGODB_URI=mongodb://localhost/%s\n' "$TEST_DB" > "$WORKTREE/api/.env"
@@ -437,6 +444,7 @@ check "worktree exists"        "[ -d '$WORKTREE/.git' ] || [ -f '$WORKTREE/.git'
 check "on branch $BRANCH"      "[ \"\$(git -C '$WORKTREE' rev-parse --abbrev-ref HEAD)\" = '$BRANCH' ]"
 check "api/.env present"       "[ -f '$WORKTREE/api/.env' ]"
 check "TEST_MONGODB_URI set"   "grep -q 'TEST_MONGODB_URI=mongodb://localhost/$TEST_DB' '$WORKTREE/api/.env'"
+check "dev DB isolated"        "grep -q 'MONGODB_URI=\"mongodb://localhost:27017/${TEST_DB}_dev\"' '$WORKTREE/api/.env'"
 check "LEDGER.md present"      "[ -f '$WORKTREE/LEDGER.md' ]"
 check "registry claim written" "[ -s '$CLAIM' ]"
 for pkg in "${PACKAGES[@]}"; do
