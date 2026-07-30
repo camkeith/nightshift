@@ -317,8 +317,13 @@ def transcript_usage(path):
         pass
     if models:
         # strip the vendor prefix and date suffix: claude-opus-4-6-20260101 -> opus-4-6
-        best = max(models.items(), key=lambda kv: kv[1])[0]
-        agg["model"] = re.sub(r"^claude-", "", re.sub(r"-\d{8}$", "", best))
+        # skip Claude's placeholder "<synthetic>" rows
+        real = {k: v for k, v in models.items() if k and k != "<synthetic>"}
+        if real:
+            best = max(real.items(), key=lambda kv: kv[1])[0]
+            agg["model"] = re.sub(r"^claude-", "", re.sub(r"-\d{8}$", "", best))
+        else:
+            agg["model"] = ""
     _USAGE_CACHE[key] = agg
     if len(_USAGE_CACHE) > 512:
         _USAGE_CACHE.clear()
@@ -333,6 +338,98 @@ def fmt_tokens(n):
     return str(n)
 
 
+def short_model(mdl):
+    """Strip vendor/date noise. Drop Claude's placeholder '<synthetic>' rows."""
+    if not mdl or mdl == "<synthetic>":
+        return ""
+    return re.sub(r"^claude-", "", re.sub(r"-\d{8}$", "", str(mdl)))
+
+
+def _toml_model(path):
+    try:
+        for line in open(path, encoding="utf-8", errors="replace"):
+            m = re.match(r'^model\s*=\s*"([^"]+)"', line.strip())
+            if m:
+                return m.group(1)
+    except Exception:
+        pass
+    return ""
+
+
+def _cursor_default_model():
+    path = os.path.join(HOME, ".cursor", "cli-config.json")
+    try:
+        d = json.load(open(path))
+        m = d.get("model") or {}
+        if isinstance(m, dict):
+            return m.get("modelId") or m.get("model") or ""
+        if isinstance(m, str):
+            return m
+    except Exception:
+        pass
+    return ""
+
+
+def _codex_default_model():
+    return _toml_model(os.path.join(HOME, ".codex", "config.toml"))
+
+
+def _wake_json_model(worktree):
+    """Best-effort model from the latest wake output (claude/cursor JSON)."""
+    path = os.path.join(worktree or "", ".nightshift-wake.json")
+    if not os.path.isfile(path):
+        return ""
+    try:
+        raw = open(path, encoding="utf-8", errors="replace").read().strip()
+        if not raw:
+            return ""
+        # Claude: JSON array/object. Codex: NDJSON without model. Cursor: often one object.
+        if raw[0] in "[{":
+            d = json.loads(raw)
+            objs = d if isinstance(d, list) else [d]
+            for o in objs:
+                if not isinstance(o, dict):
+                    continue
+                for cand in (o.get("model"),
+                             (o.get("message") or {}).get("model") if isinstance(o.get("message"), dict) else None,
+                             o.get("result", {}).get("model") if isinstance(o.get("result"), dict) else None):
+                    if cand:
+                        return str(cand)
+        for line in raw.splitlines():
+            try:
+                o = json.loads(line)
+            except Exception:
+                continue
+            if not isinstance(o, dict):
+                continue
+            for nest in (o, o.get("item") or {}, o.get("message") or {}, o.get("info") or {}):
+                if isinstance(nest, dict) and nest.get("model"):
+                    return str(nest["model"])
+    except Exception:
+        pass
+    return ""
+
+
+def provider_model_label(p):
+    """Display as provider/model, e.g. codex/gpt-5.6-sol — not stale Claude transcript noise."""
+    provider = (p.get("provider") or "claude").strip() or "claude"
+    mdl = short_model(p.get("last_model") or "")
+    if not mdl:
+        mdl = short_model(_wake_json_model(p.get("worktree", "")))
+    if not mdl:
+        if provider == "codex":
+            mdl = short_model(_codex_default_model())
+        elif provider == "cursor":
+            mdl = short_model(_cursor_default_model())
+        else:
+            for m in pm_usage(p).get("models") or []:
+                sm = short_model(m)
+                if sm:
+                    mdl = sm
+                    break
+    return f"{provider}/{mdl or '?'}"
+
+
 def pm_usage(p):
     """PM's own wakes plus everything its workers burned."""
     sd = session_dir_for(p.get("worktree", ""))
@@ -345,8 +442,9 @@ def pm_usage(p):
             continue
         for k in ("in", "cache_w", "cache_r", "out", "msgs"):
             tot[k] += u[k]
-        if u["model"]:
-            models[u["model"]] = models.get(u["model"], 0) + 1
+        sm = short_model(u["model"])
+        if sm:
+            models[sm] = models.get(sm, 0) + 1
     tot["models"] = sorted(models, key=lambda m: -models[m])
     return tot
 
@@ -661,15 +759,15 @@ def draw(stdscr, S):
     if tasks:
         right.append(("tasks", f"{tasks[0]}/{tasks[1]}"))
     left.append(("workers", str(len(workers_for(p)))))
+    left.append(("model", provider_model_label(p)))
     u = pm_usage(p)
     if u["msgs"]:
         # cache reads are the bulk of any agent's token traffic and are billed far below
         # fresh input, so splitting them out is the difference between a scary number and
-        # a useful one.
+        # a useful one. These totals are Claude transcript history; the live provider/model
+        # is shown above separately.
         right.append(("tokens", f"in {fmt_tokens(u['in'])} · out {fmt_tokens(u['out'])}"))
         right.append(("cache", f"w {fmt_tokens(u['cache_w'])} · r {fmt_tokens(u['cache_r'])}"))
-        if u["models"]:
-            left.append(("model", ", ".join(u["models"][:2])))
     if p.get("port_base"):
         left.append(("ports", f"{p['port_base']}+"))
 
@@ -723,7 +821,7 @@ def draw(stdscr, S):
             u = transcript_usage(f) or {}
             sid, aid = worker_ids(f)
             items = [(f"worker {S['wopen']+1}/{len(ws)}  ·  {os.path.basename(f)[:40]}", BOLD, C_HEAD),
-                     (f"model {u.get('model','?')}   {u.get('msgs',0)} message(s)   "
+                     (f"model claude/{short_model(u.get('model') or '') or '?'}   {u.get('msgs',0)} message(s)   "
                       f"last active {time.strftime('%H:%M:%S', time.localtime(mt))}", DIM, 0),
                      (f"tokens  in {fmt_tokens(u.get('in',0))}   "
                       f"out {fmt_tokens(u.get('out',0))}   "
@@ -765,7 +863,7 @@ def draw(stdscr, S):
                 mark = "> " if cur else "  "
                 u = transcript_usage(f) or {}
                 sid, aid = worker_ids(f)
-                meta = f"{u.get('model','?')}  in {fmt_tokens(u.get('in',0))}" \
+                meta = f"claude/{short_model(u.get('model') or '') or '?'}  in {fmt_tokens(u.get('in',0))}" \
                        f" out {fmt_tokens(u.get('out',0))}" \
                        f" cache {fmt_tokens(u.get('cache_r',0))}"
                 items.append((f"{mark}{time.strftime('%H:%M:%S', time.localtime(mt))}  "

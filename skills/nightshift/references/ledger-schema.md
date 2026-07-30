@@ -139,8 +139,9 @@ stale lock file that deadlocks every other PM at 3am is precisely the failure th
 `provider` is optional and defaults to `claude`. Set it with
 `pm-launch.sh <slug> --provider claude|codex|cursor` or `PM_PROVIDER=...` at launch;
 both persist onto the claim so later `--once` wakes (and restarts) keep the choice.
-Non-Claude providers run the same ledger-driven loop but do not get Claude Code's
-`Agent` / `Workflow` tools or the nightshift skill auto-load.
+`last_model` is the host model id for that provider (e.g. `gpt-5.6-sol`); `pm-top`
+renders it as `provider/model`. Non-Claude providers run the same ledger-driven loop but
+do not get Claude Code's `Agent` / `Workflow` tools or the nightshift skill auto-load.
 
 ### What the registry arbitrates
 

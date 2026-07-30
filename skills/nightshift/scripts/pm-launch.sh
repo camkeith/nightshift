@@ -147,6 +147,57 @@ provider_bin() {
 BIN=$(provider_bin "$PROVIDER")
 command -v "$BIN" >/dev/null || die "'$BIN' not found on PATH. install it, or pick another --provider"
 
+# Resolve the model label for status (provider/model). Prefer an explicit override,
+# then the host CLI's configured default. Persisted on the claim every wake.
+resolve_model() {
+  if [ -n "${PM_MODEL:-}" ]; then
+    printf '%s\n' "$PM_MODEL"
+    return
+  fi
+  case "$PROVIDER" in
+    codex)
+      python3 -c '
+import os, re
+try:
+    for line in open(os.path.expanduser("~/.codex/config.toml")):
+        m = re.match(r"^model\s*=\s*\"([^\"]+)\"", line.strip())
+        if m:
+            print(m.group(1)); break
+except Exception:
+    pass
+' 2>/dev/null
+      ;;
+    cursor)
+      python3 -c '
+import json, os
+try:
+    d = json.load(open(os.path.expanduser("~/.cursor/cli-config.json")))
+    m = d.get("model") or {}
+    print((m.get("modelId") or m.get("model") or "") if isinstance(m, dict) else (m or ""))
+except Exception:
+    pass
+' 2>/dev/null
+      ;;
+    claude)
+      # Claude's model is only known after the wake JSON lands; leave blank here.
+      ;;
+  esac
+}
+MODEL="$(resolve_model | tr -d '\r' | head -1 | tr -d '\n')"
+if [ -n "$MODEL" ]; then
+  CLAIM="$CLAIM" MODEL="$MODEL" python3 -c '
+import json, os
+p = os.environ["CLAIM"]
+try:
+    d = json.load(open(p))
+except Exception:
+    d = {}
+d["last_model"] = os.environ["MODEL"]
+json.dump(d, open(p, "w"), indent=2)
+open(p, "a").write("\n")
+' 2>/dev/null || true
+fi
+
 # Shared wake body. Ledger is the memory; the provider process is disposable.
 read -r -d '' WAKE_BODY <<PROMPT || true
 You are PM "$SLUG", working in $WORKTREE.
@@ -208,35 +259,57 @@ WORKFLOW_SETTINGS='{"askUserQuestionTimeout":"60s","ultracode":true,"workflowSiz
 # Best-effort wake accounting. Claude's result JSON has total_cost_usd. Other providers
 # may or may not; never invent a number.
 record_wake() {
-  CLAIM="$CLAIM" OUT="$1" PROVIDER="$PROVIDER" python3 -c '
-import json, os
+  CLAIM="$CLAIM" OUT="$1" PROVIDER="$PROVIDER" MODEL="${MODEL:-}" python3 -c '
+import json, os, re
 claim, out, provider = os.environ["CLAIM"], os.environ["OUT"], os.environ["PROVIDER"]
+hint = (os.environ.get("MODEL") or "").strip()
+
+def short(m):
+    if not m or m == "<synthetic>":
+        return ""
+    return re.sub(r"^claude-", "", re.sub(r"-\d{8}$", "", str(m)))
+
+def pick_model(obj):
+    if not isinstance(obj, dict):
+        return ""
+    for cand in (obj.get("model"),
+                 (obj.get("message") or {}).get("model") if isinstance(obj.get("message"), dict) else None):
+        s = short(cand)
+        if s:
+            return s
+    item = obj.get("item")
+    if isinstance(item, dict):
+        return pick_model(item)
+    return ""
+
+model = short(hint)
+cost = turns = None
+text = ""
+d = None
 try:
     raw = open(out).read().strip()
-    if not raw:
-        raise SystemExit
-    d = json.loads(raw)
 except Exception:
-    # Still count the wake so stagnation/cost visibility is not frozen on parse failure.
-    try:
-        c = json.load(open(claim))
-    except Exception:
-        c = {}
-    c["wakes"] = c.get("wakes", 0) + 1
-    c["provider"] = provider
-    json.dump(c, open(claim, "w"), indent=2); open(claim, "a").write("\n")
-    raise SystemExit
+    raw = ""
 
-# Claude: list of events with type==result
-# Codex --json / cursor-agent --output-format json: object or event stream
-cost = None
-turns = None
-text = ""
+if raw:
+    try:
+        d = json.loads(raw)
+    except Exception:
+        # Codex --json is NDJSON
+        d = []
+        for line in raw.splitlines():
+            try:
+                o = json.loads(line)
+            except Exception:
+                continue
+            d.append(o)
+            model = model or pick_model(o)
 
 def from_result(r):
-    global cost, turns, text
+    global cost, turns, text, model
     if not isinstance(r, dict):
         return
+    model = model or pick_model(r)
     if r.get("total_cost_usd") is not None:
         cost = float(r["total_cost_usd"] or 0)
     elif r.get("cost_usd") is not None:
@@ -253,13 +326,12 @@ if isinstance(d, list):
             from_result(o)
             break
     if cost is None:
-        for o in d:
+        for o in d if isinstance(d, list) else []:
             if isinstance(o, dict):
                 from_result(o)
+                model = model or pick_model(o)
 elif isinstance(d, dict):
     from_result(d)
-    if d.get("type") == "result":
-        from_result(d)
 
 try:
     c = json.load(open(claim))
@@ -267,6 +339,8 @@ except Exception:
     c = {}
 c["wakes"] = c.get("wakes", 0) + 1
 c["provider"] = provider
+if model:
+    c["last_model"] = model
 if cost is not None:
     c["cost_usd"] = round(c.get("cost_usd", 0.0) + cost, 4)
     c["last_wake_cost_usd"] = round(cost, 4)
