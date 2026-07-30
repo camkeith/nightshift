@@ -6,6 +6,7 @@ Layout is a split: PM list on the left, detail on the right, aggregate header on
     ^/v  select        tab   cycle pane      enter  focus detail
     i    message PM    a     attach (tmux)   w      wake now
     s    stop PM       r     refresh         q      quit
+    esc  back out: cancels a prompt, leaves a worker, clears the selection
 
 WHAT IT WILL AND WILL NOT WRITE
 
@@ -450,16 +451,51 @@ def append_inbox(p, msg):
 
 
 def prompt(stdscr, label):
+    """Read one line at the bottom of the screen. Returns None if the user pressed esc.
+
+    Hand-rolled rather than curses.getstr, which has no notion of cancelling: it swallows
+    esc and returns only on enter, so a half-typed message to a PM could not be abandoned
+    once started. esc means "back out" everywhere else in this UI and it should here too.
+    """
     h, w = stdscr.getmaxyx()
-    curses.echo(); curses.curs_set(1); stdscr.nodelay(False)
-    stdscr.addstr(h - 1, 0, " " * (w - 1))
-    stdscr.addstr(h - 1, 0, label[: w - 2], curses.color_pair(C_AMBER) | curses.A_BOLD)
     try:
-        s = stdscr.getstr(h - 1, len(label) + 1, w - len(label) - 3).decode("utf-8", "replace")
+        # ncurses waits a full second after esc to see if an escape SEQUENCE is arriving,
+        # which reads as a frozen key. Arrows still work: keypad() resolves those to
+        # KEY_* codes well inside this window.
+        curses.set_escdelay(25)
+    except (AttributeError, curses.error):
+        pass
+    curses.curs_set(1)
+    stdscr.nodelay(False)
+    buf = ""
+    x = min(len(label) + 1, max(0, w - 4))
+    room = max(1, w - x - 2)
+    try:
+        while True:
+            stdscr.addstr(h - 1, 0, " " * (w - 1))
+            stdscr.addstr(h - 1, 0, label[: w - 2], curses.color_pair(C_AMBER) | curses.A_BOLD)
+            tail = buf[-room:]                      # scroll the field, keep the caret visible
+            stdscr.addstr(h - 1, x, tail)
+            stdscr.move(h - 1, min(w - 2, x + len(tail)))
+            stdscr.refresh()
+            k = stdscr.getch()
+            if k == 27:
+                buf = None
+                break
+            if k in (curses.KEY_ENTER, 10, 13):
+                break
+            if k in (curses.KEY_BACKSPACE, 127, 8):
+                buf = buf[:-1]
+            elif k == 21:                           # ctrl-u, clear the line
+                buf = ""
+            elif 32 <= k < 127 and len(buf) < 2000:
+                buf += chr(k)
     except Exception:
-        s = ""
-    curses.noecho(); curses.curs_set(0); stdscr.nodelay(True)
-    return s.strip()
+        buf = None
+    finally:
+        curses.curs_set(0)
+        stdscr.nodelay(True)
+    return None if buf is None else buf.strip()
 
 
 def run_detached(args):
@@ -843,8 +879,10 @@ def main(stdscr, repo, skill_dir):
             S["scroll"] = max(0, S["scroll"] - 20)
 
         elif k == ord("i") and p:
-            msg = prompt(stdscr, f"message to {p['slug']}:")
-            if msg:
+            msg = prompt(stdscr, f"message to {p['slug']} (esc cancels):")
+            if msg is None:
+                S["flash"], S["flash_at"] = "cancelled", time.time()
+            elif msg:
                 ok, why = append_inbox(p, msg)
                 S["flash"], S["flash_at"] = ("queued" if ok else "failed"), time.time()
                 S["last"] = 0
@@ -865,11 +903,14 @@ def main(stdscr, repo, skill_dir):
                           p["slug"], "--once"])
             S["flash"], S["flash_at"] = "waking", time.time()
         elif k == ord("s") and p:
-            if prompt(stdscr, f"stop {p['slug']}? type yes:") == "yes":
+            ans = prompt(stdscr, f"stop {p['slug']}? type yes (esc cancels):")
+            if ans == "yes":
                 subprocess.run(["bash", os.path.join(skill_dir, "scripts", "pm-launch.sh"),
                                 p["slug"], "--stop"], capture_output=True)
                 S["flash"], S["flash_at"] = "stopped", time.time()
                 S["last"] = 0
+            elif ans is None:
+                S["flash"], S["flash_at"] = "cancelled", time.time()
 
 
 if __name__ == "__main__":
