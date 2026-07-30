@@ -124,12 +124,25 @@ esac
 
 if [ -n "$PROVIDER_FLAG" ] || [ -n "${PM_PROVIDER:-}" ]; then
   CLAIM="$CLAIM" PROVIDER="$PROVIDER" python3 -c '
-import json, os
+import json, os, re
 p, prov = os.environ["CLAIM"], os.environ["PROVIDER"]
 try:
     d = json.load(open(p))
 except Exception:
     d = {}
+
+def short(m):
+    if not m or m == "<synthetic>":
+        return ""
+    return re.sub(r"^claude-", "", re.sub(r"-\d{8}$", "", str(m)))
+
+old_prov = (d.get("provider") or "claude").strip() or "claude"
+old_model = short(d.get("last_model") or "")
+if old_model and old_prov != prov:
+    label = f"{old_prov}/{old_model}"
+    hist = [x for x in (d.get("former_models") or []) if x and x != label]
+    hist.append(label)
+    d["former_models"] = hist[-8:]
 d["provider"] = prov
 json.dump(d, open(p, "w"), indent=2)
 open(p, "a").write("\n")
@@ -185,14 +198,30 @@ except Exception:
 }
 MODEL="$(resolve_model | tr -d '\r' | head -1 | tr -d '\n')"
 if [ -n "$MODEL" ]; then
-  CLAIM="$CLAIM" MODEL="$MODEL" python3 -c '
-import json, os
+  CLAIM="$CLAIM" MODEL="$MODEL" PROVIDER="$PROVIDER" python3 -c '
+import json, os, re
 p = os.environ["CLAIM"]
+prov = (os.environ.get("PROVIDER") or "claude").strip() or "claude"
+model = os.environ["MODEL"].strip()
 try:
     d = json.load(open(p))
 except Exception:
     d = {}
-d["last_model"] = os.environ["MODEL"]
+
+def short(m):
+    if not m or m == "<synthetic>":
+        return ""
+    return re.sub(r"^claude-", "", re.sub(r"-\d{8}$", "", str(m)))
+
+old_prov = (d.get("provider") or "claude").strip() or "claude"
+old_model = d.get("last_model") or ""
+old_m, new_m = short(old_model), short(model)
+if old_m and (old_m != new_m or old_prov != prov):
+    label = f"{old_prov}/{old_m}"
+    hist = [x for x in (d.get("former_models") or []) if x and x != label]
+    hist.append(label)
+    d["former_models"] = hist[-8:]
+d["last_model"] = model
 json.dump(d, open(p, "w"), indent=2)
 open(p, "a").write("\n")
 ' 2>/dev/null || true
@@ -337,9 +366,17 @@ try:
     c = json.load(open(claim))
 except Exception:
     c = {}
+old_provider = (c.get("provider") or "claude").strip() or "claude"
+old_model = c.get("last_model") or ""
 c["wakes"] = c.get("wakes", 0) + 1
 c["provider"] = provider
 if model:
+    # Keep a short history when provider/model changes so pm-top can show "was …".
+    if old_model and (short(old_model) != model or old_provider != provider):
+        label = f"{old_provider}/{short(old_model)}"
+        hist = [x for x in (c.get("former_models") or []) if x and x != label]
+        hist.append(label)
+        c["former_models"] = hist[-8:]
     c["last_model"] = model
 if cost is not None:
     c["cost_usd"] = round(c.get("cost_usd", 0.0) + cost, 4)

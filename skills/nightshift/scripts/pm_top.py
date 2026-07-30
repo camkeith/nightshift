@@ -293,8 +293,10 @@ def transcript_usage(path):
     if key in _USAGE_CACHE:
         return _USAGE_CACHE[key]
 
-    agg = {"model": "", "in": 0, "cache_w": 0, "cache_r": 0, "out": 0, "msgs": 0}
+    agg = {"model": "", "models": [], "in": 0, "cache_w": 0, "cache_r": 0, "out": 0, "msgs": 0}
     models = {}
+    order = []
+    last_sm = ""
     try:
         with open(path, "r", errors="replace") as fh:
             for line in fh:
@@ -307,6 +309,11 @@ def transcript_usage(path):
                 mdl = m.get("model") or o.get("model")
                 if mdl:
                     models[mdl] = models.get(mdl, 0) + 1
+                    sm = short_model(mdl)
+                    if sm:
+                        last_sm = sm
+                        if sm not in order:
+                            order.append(sm)
                 if not isinstance(u, dict):
                     continue
                 agg["msgs"] += 1
@@ -316,15 +323,21 @@ def transcript_usage(path):
                 agg["out"] += int(u.get("output_tokens") or 0)
     except Exception:
         pass
-    if models:
+    if order:
+        # Current = last seen; models = chronological unique (for "was …").
+        agg["model"] = last_sm or order[-1]
+        agg["models"] = order
+    elif models:
         # strip the vendor prefix and date suffix: claude-opus-4-6-20260101 -> opus-4-6
         # skip Claude's placeholder "<synthetic>" rows
         real = {k: v for k, v in models.items() if k and k != "<synthetic>"}
         if real:
             best = max(real.items(), key=lambda kv: kv[1])[0]
             agg["model"] = re.sub(r"^claude-", "", re.sub(r"-\d{8}$", "", best))
+            agg["models"] = [agg["model"]]
         else:
             agg["model"] = ""
+            agg["models"] = []
     _USAGE_CACHE[key] = agg
     if len(_USAGE_CACHE) > 512:
         _USAGE_CACHE.clear()
@@ -344,6 +357,36 @@ def short_model(mdl):
     if not mdl or mdl == "<synthetic>":
         return ""
     return re.sub(r"^claude-", "", re.sub(r"-\d{8}$", "", str(mdl)))
+
+
+def model_with_former(current, former, prefix=""):
+    """Render current model, appending former ones when the model changed.
+
+    current: bare model or provider/model
+    former: list of bare models or provider/model labels
+    prefix: optional 'claude/' etc. applied only to bare current/former entries
+    """
+    cur = (current or "").strip()
+    if not cur:
+        cur = "?"
+    if prefix and "/" not in cur:
+        cur = f"{prefix}{cur}"
+    seen = {cur, cur.split("/", 1)[-1]}
+    extras = []
+    for raw in former or []:
+        m = (raw or "").strip()
+        if not m:
+            continue
+        label = m if "/" in m else (f"{prefix}{m}" if prefix else m)
+        bare = label.split("/", 1)[-1]
+        if label in seen or bare in seen or bare == cur.split("/", 1)[-1]:
+            continue
+        seen.add(label)
+        seen.add(bare)
+        extras.append(label)
+    if not extras:
+        return cur
+    return f"{cur} · was {', '.join(extras[-3:])}"
 
 
 def _toml_model(path):
@@ -412,7 +455,7 @@ def _wake_json_model(worktree):
 
 
 def provider_model_label(p):
-    """Display as provider/model, e.g. codex/gpt-5.6-sol — not stale Claude transcript noise."""
+    """Display as provider/model, plus former models when it changed."""
     provider = (p.get("provider") or "claude").strip() or "claude"
     mdl = short_model(p.get("last_model") or "")
     if not mdl:
@@ -428,7 +471,16 @@ def provider_model_label(p):
                 if sm:
                     mdl = sm
                     break
-    return f"{provider}/{mdl or '?'}"
+    current = f"{provider}/{mdl or '?'}"
+    former = list(p.get("former_models") or [])
+    # Also surface other models seen in this provider's usage (same wake history).
+    for m in pm_usage(p).get("models") or []:
+        sm = short_model(m)
+        if sm and sm != mdl:
+            label = f"{provider}/{sm}"
+            if label not in former and sm not in former:
+                former.append(label)
+    return model_with_former(current, former)
 
 
 def pm_usage(p):
@@ -927,7 +979,7 @@ def draw(stdscr, S):
     if tasks:
         right.append(("tasks", f"{tasks[0]}/{tasks[1]}"))
     left.append(("workers", str(len(workers_for(p)))))
-    left.append(("model", provider_model_label(p)))
+    model_lbl = provider_model_label(p)
     u = pm_usage(p)
     if u.get("in") or u.get("out") or u.get("msgs") or u.get("cache_r"):
         # cache reads are the bulk of token traffic for both Claude and Codex.
@@ -950,7 +1002,11 @@ def draw(stdscr, S):
             put(stdscr, fy + i, RX + colw, f"{k:<8}", C(C_MUTED))
             put(stdscr, fy + i, RX + colw + 8, v[:RW - colw - 9], C(C_CYAN))
     fy += max(len(left), len(right))
-
+    # Full-width so "current · was former…" is not clipped by the two-column grid.
+    if fy < body_bot - 4:
+        put(stdscr, fy, RX, "model   ", C(C_MUTED))
+        put(stdscr, fy, RX + 8, model_lbl[:RW - 9], C(C_CYAN))
+        fy += 1
     ty = fy + 1
     x = RX
     for i, nm in enumerate(PANES):
@@ -986,7 +1042,8 @@ def draw(stdscr, S):
             u = transcript_usage(f) or {}
             sid, aid = worker_ids(f)
             items = [(f"worker {S['wopen']+1}/{len(ws)}  ·  {os.path.basename(f)[:40]}", BOLD, C_HEAD),
-                     (f"model claude/{short_model(u.get('model') or '') or '?'}   {u.get('msgs',0)} message(s)   "
+                     (f"model {model_with_former(u.get('model') or '?', u.get('models') or [], prefix='claude/')}   "
+                      f"{u.get('msgs',0)} message(s)   "
                       f"last active {time.strftime('%H:%M:%S', time.localtime(mt))}", DIM, 0),
                      (f"tokens  in {fmt_tokens(u.get('in',0))}   "
                       f"out {fmt_tokens(u.get('out',0))}   "
@@ -1029,7 +1086,8 @@ def draw(stdscr, S):
                 mark = "> " if cur else "  "
                 u = transcript_usage(f) or {}
                 sid, aid = worker_ids(f)
-                meta = f"claude/{short_model(u.get('model') or '') or '?'}  in {fmt_tokens(u.get('in',0))}" \
+                meta = f"{model_with_former(u.get('model') or '?', u.get('models') or [], prefix='claude/')}  " \
+                       f"in {fmt_tokens(u.get('in',0))}" \
                        f" out {fmt_tokens(u.get('out',0))}" \
                        f" cache {fmt_tokens(u.get('cache_r',0))}"
                 items.append((f"{mark}{time.strftime('%H:%M:%S', time.localtime(mt))}  "
