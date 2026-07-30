@@ -30,8 +30,8 @@ Install nightshift: run /plugin marketplace add camkeith/nightshift then
 PMs, one claude process per git worktree; a PM's identity is its LEDGER.md, not its
 session; a PM never pushes, merges, or opens a PR into the release branch; on a blocker it
 parks and continues rather than halting or working around; pm-provision.sh and
-pm-launch.sh must be run from a real terminal, never from inside an agent session or a !
-prefix. Finally, check whether .nightshift/repo-facts.md exists in this repo, and if it
+pm-launch.sh need the sandbox disabled, which an agent can request; they do not need a
+human's terminal, but the ! prefix is sandboxed and will not work. Finally, check whether .nightshift/repo-facts.md exists in this repo, and if it
 does not, tell me it needs generating before the first PM runs.
 ```
 
@@ -88,7 +88,7 @@ A PM stops on its own when it reaches `READY-FOR-HUMAN` or `DONE`.
 ### Driving it directly
 
 `/nightshift` is a wrapper around three scripts. Run them yourself if you want more
-control, from a real terminal rather than an agent session.
+control. They need the sandbox disabled, so either a terminal or an agent with approval.
 
 | Command | What it does |
 |---|---|

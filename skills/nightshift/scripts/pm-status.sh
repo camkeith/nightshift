@@ -147,7 +147,7 @@ for d in records:
 
 if not tmux_ok:
     print(f"{C['d']}tmux was unreachable (sandboxed?), so liveness is unknown for every PM.{C['x']}")
-    print(f"{C['d']}Run this from a real terminal for accurate running/dead state.{C['x']}\n")
+    print(f"{C['d']}Re-run with the sandbox disabled for accurate running/dead state.{C['x']}\n")
 
 needs = [d for d in records if d["_ledger_status"] == "READY-FOR-HUMAN"]
 dead  = [d for d in records if d.get("status") == "CRASHED"
@@ -158,7 +158,7 @@ if needs:
 if dead:
     print(f"{C['r']}{len(dead)} PM(s) not running: {', '.join(d['slug'] for d in dead)}{C['x']}")
     print(f"{C['d']}  restart:  bash ~/.claude/skills/nightshift/scripts/pm-launch.sh <slug>{C['x']}")
-    print(f"{C['d']}            (from a real terminal, not inside a Claude session){C['x']}")
+    print(f"{C['d']}            (needs the sandbox off; an agent can do this with approval){C['x']}")
 if not needs and not dead:
     print(f"{C['g']}all PMs healthy.{C['x']}")
 print()

@@ -80,10 +80,14 @@ bash <plugin>/skills/nightshift/scripts/pm-provision.sh <slug> "<brief>" <packag
 bash <plugin>/skills/nightshift/scripts/pm-launch.sh <slug>          # PM_WORKFLOWS=1 to enable
 ```
 
-These need the sandbox disabled: package installs cannot write the package cache from
-inside one, and tmux cannot reach its socket. **That is fine here and only here**, because
-the human is present to approve it. It is exactly why setup happens at kickoff instead of
-mid-run.
+Run these yourself with `dangerouslyDisableSandbox: true`. You do not need the human's
+terminal. Package installs cannot write `~/.npm/_cacache` from inside a sandbox and tmux
+cannot reach its socket, but both work fine unsandboxed, and at kickoff the human is
+present to approve that one call.
+
+Measured: `npm install` unsandboxed returns exit 0 and writes the cache normally. An
+earlier version of this file claimed setup required a human's terminal. That was wrong,
+inferred from a single sandboxed failure that was never retried with the sandbox off.
 
 Read `pm-provision.sh`'s verification block before launching. It is built to fail loudly
 rather than hand over a half-built worktree; if it fails, fix that before starting a PM
@@ -402,11 +406,12 @@ bash <plugin>/skills/nightshift/scripts/pm-launch.sh <slug>
 bash <plugin>/skills/nightshift/scripts/pm-status.sh      # every PM on one screen
 ```
 
-**Provisioning and launching must happen in a real terminal**, not inside a Claude
-session and not via the `!` prefix. Both are sandboxed, and `npm install` cannot write
-`~/.npm/_cacache` from inside a sandbox. The failure mode is ugly: hundreds of tar errors
-followed by an npm message blaming root-owned files and recommending a `sudo chown` that
-fixes nothing. See repo-facts 1.5.
+**Provisioning and launching need the sandbox disabled**, which an agent can request with
+`dangerouslyDisableSandbox: true`. They do not need a human's terminal. The `!` prefix IS
+sandboxed and fails in a way that looks like nothing happened, so that route does not
+work. Sandboxed, `npm install` cannot write `~/.npm/_cacache` and the failure is ugly:
+hundreds of tar errors, then a message blaming root-owned files and recommending a `sudo
+chown` that fixes nothing. See repo-facts 1.5.
 
 **Tests also need the sandbox off.** An earlier version of this file claimed a
 provisioned PM was fine sandboxed because `node_modules` already existed. That was

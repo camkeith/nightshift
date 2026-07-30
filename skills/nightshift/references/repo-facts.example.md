@@ -130,7 +130,7 @@ file exists.
   which is why worktrees use sparse-checkout to exclude `.claude/`. Git tracks only three
   files there and a PM needs none of them.
 - `~/.npm/_logs` is writable but `~/.npm/_cacache` is not, so **`npm install` cannot run
-  inside a sandboxed session at all.**
+  inside a sandboxed session at all.** Unsandboxed it works normally (verified: exit 0).
 - `git fetch` over SSH cannot work sandboxed (`nc: authentication method negotiation
   failed`). Branch from the local base instead; that is correct behavior, not degraded.
 - `.git/config` writes are denied, so never use `git push -u` or anything else that sets
@@ -138,12 +138,12 @@ file exists.
 - `gh` works, because `api.github.com` is allowlisted and `enableWeakerNetworkIsolation`
   is on in `~/.claude/settings.json`.
 
-#### Therefore: provisioning is a human step, run outside Claude
+#### Therefore: provisioning needs the sandbox off, not a human
 
-`pm-provision.sh` must run from a real terminal. Not from inside a Claude session, and
-**not via the `!` prefix**, which is sandboxed too and fails silently in a way that looks
-like nothing happened at all. Once provisioned, a PM operating in its worktree is fine:
-it runs tests against existing `node_modules` and never needs the npm cache.
+`pm-provision.sh` needs the sandbox disabled. An agent can run it itself with
+`dangerouslyDisableSandbox: true`; it does not need a human's terminal. Note the `!`
+prefix IS sandboxed and fails in a way that looks like nothing happened at all, so that
+route does not work.
 
 ### 1.6 `grep -r` lies about `~/.claude/skills`
 

@@ -97,11 +97,11 @@ Violating any of these is how an unattended run destroys work rather than produc
 Measured, not assumed. Ignoring these produces failures whose error messages name the
 wrong cause.
 
-- **Run `pm-provision.sh` and `pm-launch.sh` from a real terminal.** Not inside an agent
-  session, and not via a `!` prefix. Both are sandboxed, and package installs cannot write
-  the package cache from inside a sandbox. The failure is loud but misleading: hundreds of
+- **`pm-provision.sh` and `pm-launch.sh` need the sandbox disabled**, not a human's
+  terminal. An agent can run them itself with `dangerouslyDisableSandbox: true`. Sandboxed,
+  package installs cannot write `~/.npm/_cacache` and the failure is misleading: hundreds of
   tar errors and a message blaming file ownership that recommends a `sudo chown` fixing
-  nothing.
+  nothing. Verified working unsandboxed.
 - **Tests usually need the sandbox off.** Not because of dependencies, because of localhost
   TCP. Suites bind ports and connect to local databases; a sandbox denies both. One
   measured run produced 23 fabricated failures and silently skipped ~86 tests.
