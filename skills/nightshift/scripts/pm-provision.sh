@@ -378,7 +378,7 @@ EXCL="$WORKTREE/.git/info/exclude"
 if [ -n "$EXCL" ]; then
   mkdir -p "$(dirname "$EXCL")" 2>/dev/null || true
   grep -q "vite.pm.config.js" "$EXCL" 2>/dev/null || \
-    printf '\n# nightshift per-PM dev-server configs\n**/vite.pm.config.js\n' >> "$EXCL" 2>/dev/null || true
+    printf '\n# nightshift per-PM state. Tool artifacts, never the human'"'"'s work.\n**/vite.pm.config.js\nLEDGER.md\nINBOX.md\n.nightshift-wake.json\n' >> "$EXCL" 2>/dev/null || true
 fi
 
 # A PM running its own API must not collide on the API port either.

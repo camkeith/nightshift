@@ -62,10 +62,14 @@ BRANCH=$(load_claim branch)
 # Refuse to destroy unreviewed work. A PM's whole output is its branch.
 # ---------------------------------------------------------------------------
 if [ -d "$WORKTREE" ]; then
-  DIRTY=$(git -C "$WORKTREE" status --porcelain 2>/dev/null | grep -v 'vite.pm.config.js' | wc -l | tr -d ' ')
+  # nightshift writes LEDGER.md, INBOX.md, vite.pm.config.js and a wake-result file into
+  # every worktree. They are the tool's own state, never the human's work, so they must not
+  # count as "uncommitted changes". Without this exclusion teardown refuses on every PM.
+  NS_ARTIFACTS='LEDGER\.md|INBOX\.md|vite\.pm\.config\.js|\.nightshift-wake\.json'
+  DIRTY=$(git -C "$WORKTREE" status --porcelain 2>/dev/null | grep -Ev "$NS_ARTIFACTS" | wc -l | tr -d ' ')
   if [ "$DIRTY" -gt 0 ]; then
     warn "$SLUG has $DIRTY uncommitted path(s):"
-    git -C "$WORKTREE" status --short 2>/dev/null | grep -v 'vite.pm.config.js' | head -10 | sed 's/^/    /'
+    git -C "$WORKTREE" status --short 2>/dev/null | grep -Ev "$NS_ARTIFACTS" | head -10 | sed 's/^/    /'
     die "refusing to tear down. commit, stash, or discard first."
   fi
   UNPUSHED=$(git -C "$WORKTREE" log --oneline "@{u}..HEAD" 2>/dev/null | wc -l | tr -d ' ' || echo 0)
