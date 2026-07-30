@@ -381,16 +381,30 @@ run_one_wake() {
       # Unattended: full bypass. workspace-write is not enough for package installs / tests.
       # stdin must be /dev/null: when a prompt is also passed, a live/piped stdin makes
       # codex wait on "Reading additional input from stdin..." and stall the wake.
+      # stderr goes to a sidecar log: Codex periodically spams models_cache schema
+      # warnings that would otherwise fill the tmux pane and hide real progress.
+      ERR="$WORKTREE/.nightshift-codex.err"
+      : > "$ERR"
       codex exec --json \
         --dangerously-bypass-approvals-and-sandbox \
         -C "$WORKTREE" \
-        "$WAKE_PROMPT" < /dev/null > "$OUT" || rc=$?
+        ${MODEL:+-m "$MODEL"} \
+        "$WAKE_PROMPT" < /dev/null > "$OUT" 2>"$ERR" || rc=$?
+      if [ -s "$ERR" ]; then
+        grep -Ev 'supports_reasoning_summaries|codex_models_manager|Reading additional input from stdin' "$ERR" || true
+      fi
       ;;
     cursor)
+      ERR="$WORKTREE/.nightshift-cursor.err"
+      : > "$ERR"
       cursor-agent -p --force --trust --sandbox disabled \
         --workspace "$WORKTREE" \
         --output-format json \
-        "$WAKE_PROMPT" < /dev/null > "$OUT" || rc=$?
+        ${MODEL:+--model "$MODEL"} \
+        "$WAKE_PROMPT" < /dev/null > "$OUT" 2>"$ERR" || rc=$?
+      if [ -s "$ERR" ]; then
+        cat "$ERR"
+      fi
       ;;
   esac
 

@@ -431,8 +431,17 @@ def provider_model_label(p):
 
 
 def pm_usage(p):
-    """PM's own wakes plus everything its workers burned."""
-    sd = session_dir_for(p.get("worktree", ""))
+    """Token totals for the PM's current provider (not leftover Claude history)."""
+    provider = (p.get("provider") or "claude").strip() or "claude"
+    if provider == "codex":
+        return codex_usage_for_worktree(p.get("worktree", ""))
+    if provider == "cursor":
+        return cursor_usage_for_worktree(p.get("worktree", ""))
+    return claude_usage_for_worktree(p.get("worktree", ""))
+
+
+def claude_usage_for_worktree(wt):
+    sd = session_dir_for(wt)
     tot = {"model": "", "in": 0, "cache_w": 0, "cache_r": 0, "out": 0, "msgs": 0}
     models = {}
     for f in glob.glob(os.path.join(sd, "*.jsonl")) + \
@@ -446,6 +455,133 @@ def pm_usage(p):
         if sm:
             models[sm] = models.get(sm, 0) + 1
     tot["models"] = sorted(models, key=lambda m: -models[m])
+    return tot
+
+
+_CODEX_USAGE_CACHE = {}
+
+
+def _codex_rollout_usage(path):
+    """Latest cumulative total_token_usage from one Codex rollout jsonl."""
+    try:
+        st = os.stat(path)
+        key = (path, st.st_mtime, st.st_size)
+    except Exception:
+        return None
+    if key in _CODEX_USAGE_CACHE:
+        return _CODEX_USAGE_CACHE[key]
+
+    last = None
+    msgs = 0
+    model = ""
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                try:
+                    o = json.loads(line)
+                except Exception:
+                    continue
+                payload = o.get("payload") or {}
+                if o.get("type") == "session_meta" and isinstance(payload, dict):
+                    model = model or payload.get("model") or ""
+                info = payload.get("info") if isinstance(payload, dict) else None
+                if isinstance(info, dict) and isinstance(info.get("total_token_usage"), dict):
+                    last = info["total_token_usage"]
+                if o.get("type") == "response_item":
+                    msgs += 1
+    except Exception:
+        last = None
+
+    if not last:
+        _CODEX_USAGE_CACHE[key] = None
+        return None
+    agg = {
+        "model": short_model(model),
+        "in": int(last.get("input_tokens") or 0),
+        "cache_w": 0,
+        "cache_r": int(last.get("cached_input_tokens") or 0),
+        "out": int(last.get("output_tokens") or 0) + int(last.get("reasoning_output_tokens") or 0),
+        "msgs": msgs,
+    }
+    _CODEX_USAGE_CACHE[key] = agg
+    if len(_CODEX_USAGE_CACHE) > 256:
+        _CODEX_USAGE_CACHE.clear()
+    return agg
+
+
+def codex_usage_for_worktree(wt):
+    tot = {"model": "", "in": 0, "cache_w": 0, "cache_r": 0, "out": 0, "msgs": 0, "models": []}
+    if not wt:
+        return tot
+    models = {}
+    root = os.path.join(HOME, ".codex", "sessions")
+    for f in glob.glob(os.path.join(root, "**", "rollout-*.jsonl"), recursive=True):
+        try:
+            with open(f, "r", encoding="utf-8", errors="replace") as fh:
+                head = fh.readline()
+            o = json.loads(head)
+            cwd = ((o.get("payload") or {}).get("cwd") or "")
+            if cwd != wt:
+                continue
+        except Exception:
+            continue
+        u = _codex_rollout_usage(f)
+        if not u:
+            continue
+        for k in ("in", "cache_w", "cache_r", "out", "msgs"):
+            tot[k] += u[k]
+        if u.get("model"):
+            models[u["model"]] = models.get(u["model"], 0) + 1
+    if not models:
+        sm = short_model(_codex_default_model())
+        if sm:
+            models[sm] = 1
+    tot["models"] = sorted(models, key=lambda m: -models[m])
+    if tot["models"]:
+        tot["model"] = tot["models"][0]
+    return tot
+
+
+def cursor_usage_for_worktree(wt):
+    tot = {"model": "", "in": 0, "cache_w": 0, "cache_r": 0, "out": 0, "msgs": 0, "models": []}
+    models = {}
+    sm = short_model(_cursor_default_model())
+    if sm:
+        models[sm] = 1
+    path = os.path.join(wt or "", ".nightshift-wake.json")
+    if os.path.isfile(path):
+        try:
+            raw = open(path, encoding="utf-8", errors="replace").read().strip()
+            objs = []
+            if raw[:1] in "[{":
+                d = json.loads(raw)
+                objs = d if isinstance(d, list) else [d]
+            else:
+                for line in raw.splitlines():
+                    try:
+                        objs.append(json.loads(line))
+                    except Exception:
+                        pass
+            for o in objs:
+                if not isinstance(o, dict):
+                    continue
+                msg = o.get("message") if isinstance(o.get("message"), dict) else {}
+                u = o.get("usage") or msg.get("usage")
+                if not isinstance(u, dict):
+                    continue
+                tot["msgs"] += 1
+                tot["in"] += int(u.get("input_tokens") or u.get("prompt_tokens") or 0)
+                tot["out"] += int(u.get("output_tokens") or u.get("completion_tokens") or 0)
+                tot["cache_r"] += int(u.get("cache_read_input_tokens") or u.get("cached_tokens") or 0)
+                tot["cache_w"] += int(u.get("cache_creation_input_tokens") or 0)
+                m = short_model(o.get("model") or msg.get("model"))
+                if m:
+                    models[m] = models.get(m, 0) + 1
+        except Exception:
+            pass
+    tot["models"] = sorted(models, key=lambda m: -models[m])
+    if tot["models"]:
+        tot["model"] = tot["models"][0]
     return tot
 
 
@@ -560,17 +696,44 @@ def output_for(p):
         r = subprocess.run(["tmux", "capture-pane", "-p", "-t", tmux_session(p)],
                            capture_output=True, text=True, timeout=3)
         if r.returncode == 0 and r.stdout.strip():
-            return ["live tmux pane", ""] + r.stdout.splitlines()[-300:]
+            lines = r.stdout.splitlines()
+            # Drop Codex models-cache spam so the pane stays readable.
+            filtered = [l for l in lines
+                        if "supports_reasoning_summaries" not in l
+                        and "codex_models_manager" not in l]
+            return ["live tmux pane", ""] + filtered[-300:]
     except Exception:
         pass
+    wake = os.path.join(p.get("worktree", ""), ".nightshift-wake.json")
     try:
-        d = json.load(open(os.path.join(p.get("worktree", ""), ".nightshift-wake.json")))
-        res = next(o for o in d if o.get("type") == "result")
-        return [f"last wake · ${float(res.get('total_cost_usd') or 0):.2f} · "
-                f"{res.get('num_turns')} turns · {int((res.get('duration_ms') or 0)/1000)}s",
-                ""] + (res.get("result") or "").splitlines()
+        raw = open(wake, encoding="utf-8", errors="replace").read().strip()
+        if not raw:
+            raise ValueError("empty")
+        # Claude: JSON array with type=result. Codex: NDJSON agent_message items.
+        try:
+            d = json.loads(raw)
+        except Exception:
+            d = None
+        if isinstance(d, list):
+            res = next((o for o in d if isinstance(o, dict) and o.get("type") == "result"), None)
+            if res:
+                return [f"last wake · ${float(res.get('total_cost_usd') or 0):.2f} · "
+                        f"{res.get('num_turns')} turns · {int((res.get('duration_ms') or 0)/1000)}s",
+                        ""] + (res.get("result") or "").splitlines()
+        msgs = []
+        for line in raw.splitlines():
+            try:
+                o = json.loads(line)
+            except Exception:
+                continue
+            item = o.get("item") if isinstance(o, dict) else None
+            if isinstance(item, dict) and item.get("type") == "agent_message" and item.get("text"):
+                msgs.append(item["text"])
+        if msgs:
+            return ["last wake · codex", ""] + "\n\n".join(msgs).splitlines()[-300:]
     except Exception:
-        return ["no live pane and no recorded wake output yet"]
+        pass
+    return ["no live pane and no recorded wake output yet"]
 
 
 # ---------------------------------------------------------------- actions
@@ -761,11 +924,8 @@ def draw(stdscr, S):
     left.append(("workers", str(len(workers_for(p)))))
     left.append(("model", provider_model_label(p)))
     u = pm_usage(p)
-    if u["msgs"]:
-        # cache reads are the bulk of any agent's token traffic and are billed far below
-        # fresh input, so splitting them out is the difference between a scary number and
-        # a useful one. These totals are Claude transcript history; the live provider/model
-        # is shown above separately.
+    if u.get("in") or u.get("out") or u.get("msgs") or u.get("cache_r"):
+        # cache reads are the bulk of token traffic for both Claude and Codex.
         right.append(("tokens", f"in {fmt_tokens(u['in'])} · out {fmt_tokens(u['out'])}"))
         right.append(("cache", f"w {fmt_tokens(u['cache_w'])} · r {fmt_tokens(u['cache_r'])}"))
     if p.get("port_base"):
