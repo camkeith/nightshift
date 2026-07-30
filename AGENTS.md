@@ -36,7 +36,7 @@ setup happens at kickoff rather than mid-run.
 | `bash scripts/pm-launch.sh <slug>` | Start the supervised loop: tmux + caffeinate + restart wrapper + dead-PM watchdog. |
 | `bash scripts/pm-launch.sh <slug> --once` | Run exactly one wake in the foreground. Use this before trusting the loop. |
 | `bash scripts/pm-launch.sh <slug> --stop` | Stop that PM's tmux session. |
-| `bash scripts/pm-top.sh` | Interactive. Split view with per-PM stats (runtime, wakes, spend, commits, diff, task progress, workers). Tab between LEDGER / WORKERS / OUTPUT. Keys: `i` message the PM, `a` attach to its tmux pane, `w` wake now, `s` stop. Writes only INBOX.md. |
+| `bash scripts/pm-top.sh` | Interactive. Split view with per-PM stats (runtime, wakes, spend, commits, diff, task progress, workers). `^/v` pick a PM, `<-/->` switch pane, `enter` open a worker. Per-PM: started, runtime, wakes, spend, commits, diff, task progress, models, token split. Per-worker: its goal from the PM, model, tokens, and a collapsed tool timeline. Mouse and wheel supported. Writes only INBOX.md. |
 | `bash scripts/pm-status.sh [slug]` | Every PM on one screen, blockers first, with spend. The breakfast view. |
 | `bash scripts/pm-teardown.sh <slug> [--branch]` | Retire a PM in the only safe order: stop, remove, prune, mark DONE. Refuses if work is uncommitted. |
 | `bash scripts/pm-version.sh check` | Report if a nightshift update exists. Kickoff only, throttled, never pulls. |

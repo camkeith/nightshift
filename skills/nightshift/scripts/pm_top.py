@@ -104,8 +104,15 @@ def collect_stats(p, base):
         p["_runtime"] = (f"{int(s//86400)}d {int((s%86400)//3600)}h" if s >= 86400
                          else f"{int(s//3600)}h {int((s%3600)//60)}m" if s >= 3600
                          else f"{int(s//60)}m")
+        # Local wall-clock start. "running 2h" answers how long; this answers since when,
+        # which is what you actually want when correlating against a deploy or a commit.
+        lt = time.localtime(t0)
+        today = time.localtime()
+        same_day = (lt.tm_year, lt.tm_yday) == (today.tm_year, today.tm_yday)
+        p["_started_local"] = time.strftime("%H:%M" if same_day else "%b %d %H:%M", lt)
     except Exception:
         p["_runtime"] = "-"
+        p["_started_local"] = "-"
 
     # committed work vs the base branch, plus anything uncommitted
     ref = ""
@@ -201,6 +208,7 @@ def workers_for(p):
 
 
 def last_text(path, limit=500):
+    """Final human-readable sentence from a transcript, skipping tool-call noise."""
     try:
         with open(path, "rb") as fh:
             fh.seek(0, os.SEEK_END)
@@ -221,6 +229,184 @@ def last_text(path, limit=500):
     except Exception:
         pass
     return "(no text yet)"
+
+
+
+# Transcripts carry per-message `usage` and `model`, so token counts are read rather than
+# estimated. Scanning is cached on (path, mtime, size): a busy worker's transcript is
+# hundreds of KB and re-parsing it every 5s refresh would make the UI crawl.
+_USAGE_CACHE = {}
+
+
+def transcript_usage(path):
+    """{model, in, cache_w, cache_r, out, msgs} for one transcript."""
+    try:
+        st = os.stat(path)
+        key = (path, st.st_mtime, st.st_size)
+    except Exception:
+        return None
+    if key in _USAGE_CACHE:
+        return _USAGE_CACHE[key]
+
+    agg = {"model": "", "in": 0, "cache_w": 0, "cache_r": 0, "out": 0, "msgs": 0}
+    models = {}
+    try:
+        with open(path, "r", errors="replace") as fh:
+            for line in fh:
+                try:
+                    o = json.loads(line)
+                except Exception:
+                    continue
+                m = o.get("message") or {}
+                u = m.get("usage") or o.get("usage")
+                mdl = m.get("model") or o.get("model")
+                if mdl:
+                    models[mdl] = models.get(mdl, 0) + 1
+                if not isinstance(u, dict):
+                    continue
+                agg["msgs"] += 1
+                agg["in"] += int(u.get("input_tokens") or 0)
+                agg["cache_w"] += int(u.get("cache_creation_input_tokens") or 0)
+                agg["cache_r"] += int(u.get("cache_read_input_tokens") or 0)
+                agg["out"] += int(u.get("output_tokens") or 0)
+    except Exception:
+        pass
+    if models:
+        # strip the vendor prefix and date suffix: claude-opus-4-6-20260101 -> opus-4-6
+        best = max(models.items(), key=lambda kv: kv[1])[0]
+        agg["model"] = re.sub(r"^claude-", "", re.sub(r"-\d{8}$", "", best))
+    _USAGE_CACHE[key] = agg
+    if len(_USAGE_CACHE) > 512:
+        _USAGE_CACHE.clear()
+    return agg
+
+
+def fmt_tokens(n):
+    if n >= 1_000_000:
+        return f"{n/1_000_000:.1f}M"
+    if n >= 1000:
+        return f"{n/1000:.0f}K"
+    return str(n)
+
+
+def pm_usage(p):
+    """PM's own wakes plus everything its workers burned."""
+    sd = session_dir_for(p.get("worktree", ""))
+    tot = {"model": "", "in": 0, "cache_w": 0, "cache_r": 0, "out": 0, "msgs": 0}
+    models = {}
+    for f in glob.glob(os.path.join(sd, "*.jsonl")) + \
+             glob.glob(os.path.join(sd, "**", "subagents", "*.jsonl"), recursive=True):
+        u = transcript_usage(f)
+        if not u:
+            continue
+        for k in ("in", "cache_w", "cache_r", "out", "msgs"):
+            tot[k] += u[k]
+        if u["model"]:
+            models[u["model"]] = models.get(u["model"], 0) + 1
+    tot["models"] = sorted(models, key=lambda m: -models[m])
+    return tot
+
+
+def _tool_target(name, inp):
+    """The one argument that says what a tool call actually did."""
+    if not isinstance(inp, dict):
+        return ""
+    for k in ("file_path", "path", "notebook_path"):
+        if inp.get(k):
+            return str(inp[k]).replace(os.path.expanduser("~"), "~")
+    if inp.get("command"):
+        return " ".join(str(inp["command"]).split())[:120]
+    for k in ("pattern", "query", "url", "description", "prompt"):
+        if inp.get(k):
+            return " ".join(str(inp[k]).split())[:120]
+    return ""
+
+
+def worker_goal(path, limit=600):
+    """The prompt the PM dispatched this worker with, i.e. its goal.
+
+    It is the first user message in the transcript. Reading it from the head of the file
+    rather than the tail matters: a busy worker's later turns are tool results, and the
+    goal is the one thing that explains why any of them happened.
+    """
+    try:
+        with open(path, "r", errors="replace") as fh:
+            for _ in range(400):
+                line = fh.readline()
+                if not line:
+                    break
+                try:
+                    o = json.loads(line)
+                except Exception:
+                    continue
+                if o.get("type") != "user":
+                    continue
+                c = (o.get("message") or {}).get("content")
+                txt = ""
+                if isinstance(c, str):
+                    txt = c
+                elif isinstance(c, list):
+                    for b in c:
+                        if isinstance(b, dict) and b.get("type") == "text":
+                            txt += b.get("text", "")
+                txt = txt.strip()
+                if txt:
+                    return txt[:limit]
+    except Exception:
+        pass
+    return ""
+
+
+def worker_events(path, limit=200):
+    """A readable timeline for one worker.
+
+    Returns (kind, head, body, ts) where kind is 'text' | 'tool' | 'user'.
+
+    Consecutive calls to the same tool collapse into one row with a count, because a
+    worker doing real work emits dozens of Reads in a row and rendering each as its own
+    "assistant / [tool: Read]" block buries the two sentences that actually matter.
+    """
+    raw = []
+    try:
+        with open(path, "rb") as fh:
+            fh.seek(0, os.SEEK_END)
+            fh.seek(max(0, fh.tell() - 600000))
+            lines = fh.read().decode("utf-8", "replace").splitlines()
+        for line in lines:
+            try:
+                o = json.loads(line)
+            except Exception:
+                continue
+            role = o.get("type")
+            if role not in ("user", "assistant"):
+                continue
+            ts = (o.get("timestamp") or "")[11:19]
+            c = (o.get("message") or {}).get("content")
+            if isinstance(c, str):
+                if c.strip():
+                    raw.append(("user" if role == "user" else "text", "", c.strip(), ts))
+                continue
+            if not isinstance(c, list):
+                continue
+            for b in c:
+                if not isinstance(b, dict):
+                    continue
+                if b.get("type") == "text" and b.get("text", "").strip():
+                    raw.append(("text", "", b["text"].strip(), ts))
+                elif b.get("type") == "tool_use":
+                    raw.append(("tool", b.get("name", "?"), _tool_target(b.get("name"), b.get("input")), ts))
+    except Exception:
+        pass
+
+    out = []
+    for kind, head, body, ts in raw:
+        if kind == "tool" and out and out[-1][0] == "tool" and out[-1][1] == head:
+            prev = out[-1]
+            targets = prev[2] if isinstance(prev[2], list) else [prev[2]]
+            out[-1] = ("tool", head, targets + [body], prev[3])
+        else:
+            out.append((kind, head, [body] if kind == "tool" else body, ts))
+    return out[-limit:]
 
 
 def tmux_session(p):
@@ -312,6 +498,8 @@ def wrap(items, width):
 
 def draw(stdscr, S):
     stdscr.erase()
+    # Rebuilt every frame so hit-testing can never drift from what is on screen.
+    S["hits"] = {"pms": [], "tabs": [], "keys": []}
     h, w = stdscr.getmaxyx()
     pms, sel, pane, scroll, focus = (S[k] for k in ("pms", "sel", "pane", "scroll", "focus"))
     C = curses.color_pair
@@ -348,6 +536,7 @@ def draw(stdscr, S):
         marker = "▐" if cur else " "
         attr = (BOLD if cur else 0) | C(col)
         put(stdscr, y, 0, marker, C(C_CYAN) | BOLD if cur else 0)
+        S["hits"]["pms"].append((y, y + 1, i))
         put(stdscr, y, 2, f"{p.get('slug','?')[:LW-12]:<{LW-12}}", attr)
         put(stdscr, y, LW - 9, f"{age(p.get('heartbeat','')):>4}", C(C_MUTED))
         y += 1
@@ -383,7 +572,8 @@ def draw(stdscr, S):
     # compact stat grid: two columns of label/value pairs
     files, ins, dele = p.get("_diff", (0, 0, 0))
     tasks = p.get("_tasks")
-    left = [("running", p.get("_runtime", "-")),
+    left = [("started", p.get("_started_local", "-")),
+            ("running", p.get("_runtime", "-")),
             ("wakes", f"{p.get('wakes', 0)}"),
             ("spend", f"${float(p.get('cost_usd') or 0):.2f}")]
     right = [("branch", p.get("branch", "-")),
@@ -392,6 +582,15 @@ def draw(stdscr, S):
     if tasks:
         right.append(("tasks", f"{tasks[0]}/{tasks[1]}"))
     left.append(("workers", str(len(workers_for(p)))))
+    u = pm_usage(p)
+    if u["msgs"]:
+        # cache reads are the bulk of any agent's token traffic and are billed far below
+        # fresh input, so splitting them out is the difference between a scary number and
+        # a useful one.
+        right.append(("tokens", f"in {fmt_tokens(u['in'])} · out {fmt_tokens(u['out'])}"))
+        right.append(("cache", f"w {fmt_tokens(u['cache_w'])} · r {fmt_tokens(u['cache_r'])}"))
+        if u["models"]:
+            left.append(("model", ", ".join(u["models"][:2])))
     if p.get("port_base"):
         left.append(("ports", f"{p['port_base']}+"))
 
@@ -415,6 +614,7 @@ def draw(stdscr, S):
     for i, nm in enumerate(PANES):
         on = i == pane
         put(stdscr, ty, x, f" {nm} ", (C(C_CYAN) | BOLD) if on else C(C_MUTED))
+        S["hits"]["tabs"].append((ty, x, x + len(nm) + 2, i))
         x += len(nm) + 3
     hline(stdscr, ty + 1, RX, RW, "─", C(C_MUTED))
 
@@ -433,15 +633,65 @@ def draw(stdscr, S):
             items.append(("", 0, 0))
     elif pane == 1:
         ws = workers_for(p)
+        S["_ws"] = ws
         if not ws:
             items = [("no workers dispatched yet", DIM, 0), ("", 0, 0),
-                     ("A PM spawns subagents once it starts implementing.", DIM, 0)]
+                     ("A PM spawns subagents once it starts implementing.", DIM, 0),
+                     ("This pane fills in as soon as it does.", DIM, 0)]
+        elif S.get("wopen") is not None and S["wopen"] < len(ws):
+            # drilled into one worker: its whole conversation, newest last
+            mt, sz, f = ws[S["wopen"]]
+            u = transcript_usage(f) or {}
+            items = [(f"worker {S['wopen']+1}/{len(ws)}  ·  {os.path.basename(f)[:40]}", BOLD, C_HEAD),
+                     (f"model {u.get('model','?')}   {u.get('msgs',0)} message(s)   "
+                      f"last active {time.strftime('%H:%M:%S', time.localtime(mt))}", DIM, 0),
+                     (f"tokens  in {fmt_tokens(u.get('in',0))}   "
+                      f"out {fmt_tokens(u.get('out',0))}   "
+                      f"cache write {fmt_tokens(u.get('cache_w',0))}   "
+                      f"cache read {fmt_tokens(u.get('cache_r',0))}", 0, C_GREEN),
+                     ("esc or <- returns to the worker list", DIM, 0),
+                     ("", 0, 0)]
+            g = worker_goal(f)
+            if g:
+                items.append(("GOAL FROM THE PM", BOLD, C_HEAD))
+                items += [("  " + l, 0, 0) for l in g.splitlines()[:12]]
+                items.append(("", 0, 0))
+            for kind, head, body, ts in worker_events(f):
+                if kind == "tool":
+                    targets = [b for b in body if b]
+                    n = len(body)
+                    label = f"{head} x{n}" if n > 1 else head
+                    items.append((f"{ts or '--:--:--'}  {label}", BOLD, C_AMBER))
+                    for tgt in targets[:6]:
+                        items.append(("            " + tgt, DIM, 0))
+                    if len(targets) > 6:
+                        items.append((f"            ... {len(targets)-6} more", DIM, 0))
+                elif kind == "user":
+                    items.append((f"{ts or '--:--:--'}  prompt", BOLD, C_HEAD))
+                    items += [("            " + l, DIM, 0) for l in body.splitlines()[:6]]
+                else:
+                    items.append((f"{ts or '--:--:--'}  says", BOLD, C_CYAN))
+                    items += [("            " + l, 0, 0) for l in body.splitlines()[:40]]
+                items.append(("", 0, 0))
         else:
-            items = [(f"{len(ws)} worker(s), newest first", BOLD, C_HEAD), ("", 0, 0)]
-            for mt, sz, f in ws[:30]:
-                items.append((f"{time.strftime('%H:%M:%S', time.localtime(mt))}  "
-                              f"{sz//1024:>5}K  {os.path.basename(f)[:34]}", BOLD, C_CYAN))
-                items.append(("  " + last_text(f, 400).replace("\n", " "), 0, 0))
+            wsel = S.get("wsel", 0)
+            items = [(f"{len(ws)} worker(s), newest first"
+                      "     ^/v select   enter open", BOLD, C_HEAD), ("", 0, 0)]
+            for i, (mt, sz, f) in enumerate(ws[:40]):
+                cur = i == wsel
+                mark = "> " if cur else "  "
+                u = transcript_usage(f) or {}
+                meta = f"{u.get('model','?')}  in {fmt_tokens(u.get('in',0))}" \
+                       f" out {fmt_tokens(u.get('out',0))}" \
+                       f" cache {fmt_tokens(u.get('cache_r',0))}"
+                items.append((f"{mark}{time.strftime('%H:%M:%S', time.localtime(mt))}  "
+                              f"{os.path.basename(f)[:26]}",
+                              BOLD if cur else 0, C_CYAN if cur else C_MUTED))
+                items.append(("    " + meta, DIM, C_GREEN if cur else 0))
+                g = worker_goal(f, 160).replace("\n", " ")
+                if g:
+                    items.append(("    goal: " + g, DIM, C_HEAD))
+                items.append(("    last: " + last_text(f, 180).replace("\n", " "), DIM, 0))
                 items.append(("", 0, 0))
     else:
         items = [(l, 0, 0) for l in output_for(p)]
@@ -459,12 +709,14 @@ def draw(stdscr, S):
 
     # ---- footer ----
     hline(stdscr, h - 2, 0, w, "─", C(C_MUTED))
-    keys = [("^/v", "select"), ("tab", "pane"), ("i", "message"),
+    keys = [("^v", "pm"), ("<>", "pane"), ("enter", "open"), ("i", "msg"),
             ("a", "attach"), ("w", "wake"), ("s", "stop"), ("q", "quit")]
     x = 1
     for k, lbl in keys:
+        start = x
         put(stdscr, h - 1, x, k, C(C_CYAN) | BOLD); x += len(k) + 1
         put(stdscr, h - 1, x, lbl, C(C_MUTED));     x += len(lbl) + 3
+        S["hits"]["keys"].append((h - 1, start, x - 3, k))
     stdscr.refresh()
 
 
@@ -473,6 +725,14 @@ def draw(stdscr, S):
 def main(stdscr, repo, skill_dir):
     curses.curs_set(0)
     stdscr.nodelay(True)
+    # Mouse: click a PM, a pane tab, or a footer key; wheel scrolls the detail pane.
+    # BUTTON5 is wheel-down on most terminals but is absent from some curses builds, so
+    # it is resolved defensively rather than referenced directly.
+    try:
+        curses.mousemask(curses.ALL_MOUSE_EVENTS | curses.REPORT_MOUSE_POSITION)
+        print("\033[?1003l\033[?1000h", end="", flush=True)   # click reporting, not motion
+    except Exception:
+        pass
     curses.start_color()
     curses.use_default_colors()
     for pid, c in ((C_RED, curses.COLOR_RED), (C_AMBER, curses.COLOR_YELLOW),
@@ -484,7 +744,10 @@ def main(stdscr, repo, skill_dir):
             curses.init_pair(pid, curses.COLOR_WHITE, -1)
 
     S = {"pms": load_pms(repo), "sel": 0, "pane": 0, "scroll": 0,
-         "focus": "list", "last": 0.0, "flash": "", "flash_at": 0.0}
+         "focus": "list", "last": 0.0, "flash": "", "flash_at": 0.0,
+         "hits": {"pms": [], "tabs": [], "keys": []},
+         "wsel": 0, "wopen": None, "_ws": []}
+    WHEEL_DOWN = getattr(curses, "BUTTON5_PRESSED", 0x200000)
 
     while True:
         if time.time() - S["last"] > REFRESH_SECS:
@@ -502,26 +765,75 @@ def main(stdscr, repo, skill_dir):
         pms, sel = S["pms"], S["sel"]
         p = pms[sel] if pms else None
 
+        if k == curses.KEY_MOUSE:
+            try:
+                _, mx, my, _, bst = curses.getmouse()
+            except Exception:
+                continue
+            if bst & curses.BUTTON4_PRESSED:          # wheel up
+                S["scroll"] = max(0, S["scroll"] - 3); continue
+            if bst & WHEEL_DOWN:                      # wheel down
+                S["scroll"] += 3; continue
+            if not (bst & (curses.BUTTON1_PRESSED | curses.BUTTON1_CLICKED)):
+                continue
+            if S["pane"] == 1 and S.get("wopen") is None and mx > (max(26, min(38, stdscr.getmaxyx()[1] // 3))):
+                pass                                  # worker rows are scroll-relative; keys handle them
+            for y0, y1, idx in S["hits"]["pms"]:      # click a PM
+                if y0 <= my <= y1:
+                    S["sel"], S["scroll"], S["focus"] = idx, 0, "list"
+                    break
+            else:
+                for ty_, x0, x1, idx in S["hits"]["tabs"]:   # click a pane tab
+                    if my == ty_ and x0 <= mx <= x1:
+                        S["pane"], S["scroll"] = idx, 0
+                        break
+                else:
+                    for ky, x0, x1, key in S["hits"]["keys"]:  # click a footer key
+                        if my == ky and x0 <= mx <= x1:
+                            curses.ungetch(ord(key[0]))
+                            break
+            continue
+
         if k in (ord("q"), ord("Q")):
             return
         elif k in (ord("r"), ord("R")):
             S["last"] = 0
+        elif k in (curses.KEY_RIGHT, 9):
+            # <-/-> always cycle panes. Nothing else competes for them, which was the
+            # confusion in the first version: arrows meant three things by context.
+            S["pane"] = (S["pane"] + 1) % 3
+            S["scroll"], S["wsel"], S["wopen"] = 0, 0, None
+        elif k == curses.KEY_LEFT:
+            if S.get("wopen") is not None:
+                S["wopen"], S["scroll"] = None, 0        # leave the worker, not the pane
+            else:
+                S["pane"] = (S["pane"] - 1) % 3
+                S["scroll"], S["wsel"] = 0, 0
+        elif k == 27:
+            if S.get("wopen") is not None:
+                S["wopen"], S["scroll"] = None, 0
         elif k in (curses.KEY_DOWN, ord("j")):
-            if S["focus"] == "list":
-                S["sel"] = min(sel + 1, max(0, len(pms) - 1)); S["scroll"] = 0
+            if S["pane"] == 1 and S.get("wopen") is None and S.get("_ws"):
+                S["wsel"] = min(S.get("wsel", 0) + 1, len(S["_ws"]) - 1)
+            elif S["focus"] == "list":
+                S["sel"] = min(sel + 1, max(0, len(pms) - 1))
+                S["scroll"], S["wsel"], S["wopen"] = 0, 0, None
             else:
                 S["scroll"] += 1
         elif k in (curses.KEY_UP, ord("k")):
-            if S["focus"] == "list":
-                S["sel"] = max(sel - 1, 0); S["scroll"] = 0
+            if S["pane"] == 1 and S.get("wopen") is None and S.get("_ws"):
+                S["wsel"] = max(S.get("wsel", 0) - 1, 0)
+            elif S["focus"] == "list":
+                S["sel"] = max(sel - 1, 0)
+                S["scroll"], S["wsel"], S["wopen"] = 0, 0, None
             else:
                 S["scroll"] = max(0, S["scroll"] - 1)
-        elif k == 9:
-            S["pane"] = (S["pane"] + 1) % 3; S["scroll"] = 0
-        elif k in (curses.KEY_ENTER, 10, 13, curses.KEY_RIGHT):
-            S["focus"] = "detail"
-        elif k in (27, curses.KEY_LEFT):
-            S["focus"] = "list"
+        elif k in (curses.KEY_ENTER, 10, 13):
+            if S["pane"] == 1 and S.get("_ws"):
+                S["wopen"] = S.get("wsel", 0) if S.get("wopen") is None else None
+                S["scroll"] = 0
+            else:
+                S["focus"] = "detail" if S["focus"] == "list" else "list"
         elif k == curses.KEY_NPAGE:
             S["scroll"] += 20
         elif k == curses.KEY_PPAGE:
