@@ -79,10 +79,26 @@ kickoff needs you.
 ```bash
 NS=~/.claude/skills/nightshift/scripts
 
-bash $NS/pm-top.sh                       # interactive: drill into a PM, its workers, its output
+bash $NS/pm-top.sh                       # interactive: drill into a PM, its agents, its output
 bash $NS/pm-status.sh                    # one-shot snapshot, blockers first
 bash $NS/pm-launch.sh <slug> --stop      # stop one
 ```
+
+`pm-top` is a split view: PMs on the left, detail on the right. Focus is always one
+region at a time (header chip: `[PMs]`, `[agents]`, or `[scroll]`).
+
+| Key | Action |
+|---|---|
+| `Tab` | Switch side: PMs ↔ right pane |
+| `↑` / `↓` | Move in the focused region |
+| `n` / `p` | Next / previous PM (any focus) |
+| `1`–`9` | Jump to that PM |
+| `[` / `]` | Cycle LEDGER → WORKERS → OUTPUT |
+| `Enter` | From PMs: open WORKERS; from agents: open the selected agent |
+| `Esc` / `←` | Back: close agent → focus PMs |
+| `→` | Focus the right pane |
+| `i` / `a` / `w` / `s` | Message / attach tmux / wake once / stop |
+| mouse | Click PMs, tabs, agents; wheel scrolls (or moves PMs over the list) |
 
 A PM stops on its own when it reaches `READY-FOR-HUMAN` or `DONE`.
 
@@ -133,7 +149,7 @@ control. They need the sandbox disabled, so either a terminal or an agent with a
 | `pm-launch.sh <slug> --stop` | Stop that PM |
 | `pm-launch.sh <slug> --provider …` | Set/persist `claude`, `codex`, or `cursor` for that PM |
 | `pm-status.sh [slug]` | Every PM on one screen, blockers first (shows `[provider]`) |
-| `pm-top.sh` | Interactive. Arrow through PMs, `<-/->` panes, enter to open a worker |
+| `pm-top.sh` | Interactive split view. `Tab` switches PMs ↔ detail; `↑↓` move the focused region; `n`/`p` change PM; `[`/`]` cycle panes; `Enter` opens an agent |
 | `pm-watch.sh` | One line per state change. Run it in the background to get a footer entry you can arrow into |
 | `pm-overlay-install.sh` | Bind a tmux key to float `pm-top` over Claude Code; Esc returns |
 | `pm-teardown.sh <slug>` | Retire a PM safely: stop, remove, prune, mark done |
