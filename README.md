@@ -98,7 +98,8 @@ control. They need the sandbox disabled, so either a terminal or an agent with a
 | `pm-launch.sh <slug> --once` | One wake in the foreground. Do this before trusting the loop |
 | `pm-launch.sh <slug> --stop` | Stop that PM |
 | `pm-status.sh [slug]` | Every PM on one screen, blockers first |
-| `pm-top.sh` | Interactive. Arrow through PMs, enter to open, tab between ledger / workers / output |
+| `pm-top.sh` | Interactive. Arrow through PMs, `<-/->` panes, enter to open a worker |
+| `pm-overlay-install.sh` | Bind a tmux key to float `pm-top` over Claude Code; Esc returns |
 | `pm-teardown.sh <slug>` | Retire a PM safely: stop, remove, prune, mark done |
 
 `PM_WORKFLOWS=1` before `pm-launch.sh` grants the PM standing Workflow orchestration. Off
