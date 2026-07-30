@@ -12,6 +12,10 @@
 # Example:
 #   pm-provision.sh billing "per-seat billing for institutions" api client
 #
+#   PM_OPENSPEC=add-per-seat-billing \
+#     pm-provision.sh billing "per-seat billing" api client
+#   ^ hands over an existing OpenSpec change; the PM executes its tasks.md
+#
 # Idempotent: re-running for an existing slug re-verifies and repairs the worktree
 # rather than failing, so it is safe to run again after a crash.
 
@@ -413,6 +417,18 @@ done
 # 7. Ledger skeleton. The PM's identity lives here, not in any session.
 # ---------------------------------------------------------------------------
 NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+# If the human is handing over an existing OpenSpec change, record it now. Without this
+# the ledger says "(not yet created)" and wake 1 has no idea which change it is executing,
+# which silently breaks the whole brief-to-tasks handoff.
+OPENSPEC_LINE="(none yet; create one on wake 1 if the work needs it)"
+if [ -n "${PM_OPENSPEC:-}" ]; then
+  OS_DIR="openspec/changes/$PM_OPENSPEC"
+  [ -d "$WORKTREE/$OS_DIR" ] || die "PM_OPENSPEC='$PM_OPENSPEC' but $OS_DIR does not exist in the worktree"
+  [ -f "$WORKTREE/$OS_DIR/tasks.md" ] || warn "$OS_DIR has no tasks.md; the PM will have nothing to work from"
+  OPENSPEC_LINE="$OS_DIR/     (tasks.md is the task ledger)"
+  say "openspec change: $PM_OPENSPEC ($(grep -c '^- \[ \]' "$WORKTREE/$OS_DIR/tasks.md" 2>/dev/null || echo 0) open task(s))"
+fi
 # Pin the plugin version. Every wake of this PM uses what it started with, so an
 # update landing mid-run cannot change the rules between wake 4 and wake 5.
 PLUGIN_SHA="$(bash "$(dirname "$0")/pm-version.sh" sha 2>/dev/null || true)"
@@ -428,7 +444,7 @@ FEATURE: $BRIEF
 BRANCH: $BRANCH
 WORKTREE: $WORKTREE
 TEST_DB: $TEST_DB
-OPENSPEC: (not yet created)
+OPENSPEC: ${OPENSPEC_LINE}
 STARTED: $NOW
 LAST WAKE: $NOW
 

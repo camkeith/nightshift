@@ -36,7 +36,22 @@ walk away", asking for confirmation exactly once.
 
 Take the first of these that exists, and say which one you used:
 
-1. An OpenSpec change the human names or that is obviously in flight.
+1. **An OpenSpec change** the human names or that is obviously in flight.
+
+   Verify it before accepting it. `openspec/changes/` accumulates: on the repo this was
+   built against it held 91 directories, most of them finished or abandoned. **A change
+   directory existing is not evidence the work is live.** Check that `tasks.md` exists and
+   has unchecked boxes, and check `git log` on it for recency.
+
+   Then **pass it through to provisioning**, or the PM will never find it:
+
+   ```bash
+   PM_OPENSPEC=<change-id> bash <scripts>/pm-provision.sh <slug> "<brief>" <packages>
+   ```
+
+   That writes the change path into the ledger's `OPENSPEC:` line. Without it the ledger
+   says "(none yet)" and wake 1 starts from the one-line brief instead of the spec you
+   already wrote, which is the quiet way to lose all your planning.
 2. A plan or spec file they point at.
 3. The conversation you are already in. If they have been discussing a feature, that is
    the brief; play it back rather than making them retype it.
@@ -594,8 +609,19 @@ yourself writing a planning or review loop from scratch, stop and go look for it
 
 **Call these as your engine:** `superpowers:subagent-driven-development` (fresh
 implementer per task, per-task reviewer, fix loop with escalation) and the OpenSpec
-skills. This repo runs OpenSpec for real, so route through it rather than inventing a
-parallel format.
+skills. Where a repo runs OpenSpec, route through it rather than inventing a parallel
+format.
+
+Which OpenSpec skill depends on what you have:
+
+| You have | Use |
+|---|---|
+| A change id in your ledger's `OPENSPEC:` line | `openspec-apply-change` (or `opsx:apply`). Work its `tasks.md` in order, checking boxes only after you verify. |
+| A brief and no change, and the work is large enough to need one | `openspec-propose` on wake 1, then record the new change id in your ledger before doing anything else. |
+| A finished change | **Nothing.** `openspec-archive-change` refuses to guess and archiving is a human act after deployment. |
+
+`tasks.md` is the task ledger and it is git-committed, so it survives everything
+compaction can do to you. Do not duplicate its state into `LEDGER.md`; point at it.
 
 **gstack skills need a lever.** Every one of them stops and asks unless the environment
 says a human is not there. Verified by running the detector:
