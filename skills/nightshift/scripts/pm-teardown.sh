@@ -39,10 +39,24 @@ warn() { printf '\033[33mwarn:\033[0m %s\n' "$*" >&2; }
 SLUG="$1"; DROP_BRANCH="${2:-}"
 
 CLAIM="$REGISTRY/$SLUG.json"
+
+# A claim can be empty. It is created empty (that is what makes the claim atomic) and the
+# JSON body is written last, so provisioning dying in between leaves a zero-byte file.
+# Every script that json.loads it then crashes. Observed live during a config-gate test.
+load_claim() {
+  python3 -c "
+import json, sys
+try:
+    d = json.load(open('$CLAIM'))
+except Exception:
+    sys.exit(0)
+print(d.get(sys.argv[1], '') or '')
+" "$1" 2>/dev/null || true
+}
 [ -f "$CLAIM" ] || die "no registry claim for '$SLUG'"
 
-WORKTREE=$(python3 -c "import json;print(json.load(open('$CLAIM')).get('worktree',''))")
-BRANCH=$(python3 -c "import json;print(json.load(open('$CLAIM')).get('branch',''))")
+WORKTREE=$(load_claim worktree)
+BRANCH=$(load_claim branch)
 
 # ---------------------------------------------------------------------------
 # Refuse to destroy unreviewed work. A PM's whole output is its branch.
@@ -101,7 +115,11 @@ fi
 # that slug's branch already exists.
 python3 - "$CLAIM" <<'PY'
 import json, sys, datetime
-p = sys.argv[1]; d = json.load(open(p))
+p = sys.argv[1]
+try:
+    d = json.load(open(p))
+except Exception:
+    d = {}          # empty or malformed claim: still record the outcome
 d["status"] = "DONE"
 d["torn_down"] = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 json.dump(d, open(p, "w"), indent=2); open(p, "a").write("\n")
@@ -110,9 +128,9 @@ say "registry marked DONE (kept on purpose)"
 
 # If nightshift moved during the run, say so. It explains why an old PM and a
 # new one behave differently, which is otherwise a confusing thing to discover.
-PINNED=$(python3 -c "import json;print(json.load(open('$CLAIM')).get('plugin_sha') or '')" 2>/dev/null)
+PINNED=$(load_claim plugin_sha)
 [ -n "$PINNED" ] && bash "$SKILL_DIR/scripts/pm-version.sh" drift "$PINNED" || true
 
-COST=$(python3 -c "import json;print(json.load(open('$CLAIM')).get('cost_usd','?'))" 2>/dev/null)
-WAKES=$(python3 -c "import json;print(json.load(open('$CLAIM')).get('wakes','?'))" 2>/dev/null)
+COST=$(load_claim cost_usd)
+WAKES=$(load_claim wakes)
 printf '\n  %s torn down.  %s wakes,  $%s total\n\n' "$SLUG" "$WAKES" "$COST"

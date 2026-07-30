@@ -88,6 +88,17 @@ CLAIM="$REGISTRY/$SLUG.json"
 
 mkdir -p "$REGISTRY"
 
+# The claim is created empty for atomicity and filled in at the very end. If provisioning
+# dies in between, a zero-byte claim strands the slug and crashes every other script.
+cleanup_empty_claim() {
+  if [ -f "$CLAIM" ] && [ ! -s "$CLAIM" ]; then
+    rm -f "$CLAIM"
+    printf '\033[33mwarn:\033[0m removed empty claim for %s\n' "$SLUG" >&2
+  fi
+  return 0
+}
+trap cleanup_empty_claim EXIT
+
 # ---------------------------------------------------------------------------
 # 1. Claim the slug atomically.
 #

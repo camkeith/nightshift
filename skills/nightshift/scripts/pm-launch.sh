@@ -38,10 +38,25 @@ say() { printf '\033[36m==>\033[0m %s\n' "$*"; }
 SLUG="$1"; MODE="${2:-}"
 
 CLAIM="$REGISTRY/$SLUG.json"
+
+# A claim can be empty. It is created empty (that is what makes the claim atomic) and the
+# JSON body is written last, so provisioning dying in between leaves a zero-byte file.
+# Every script that json.loads it then crashes. Observed live during a config-gate test.
+load_claim() {
+  python3 -c "
+import json, sys
+try:
+    d = json.load(open('$CLAIM'))
+except Exception:
+    sys.exit(0)
+print(d.get(sys.argv[1], '') or '')
+" "$1" 2>/dev/null || true
+}
 [ -f "$CLAIM" ] || die "no registry claim for '$SLUG'. run pm-provision.sh first."
 
-WORKTREE=$(python3 -c "import json;print(json.load(open('$CLAIM'))['worktree'])")
+WORKTREE=$(load_claim worktree)
 SESSION="pm-$SLUG"
+[ -n "$WORKTREE" ] || die "claim for '$SLUG' is empty or malformed. delete $CLAIM and re-provision."
 [ -d "$WORKTREE" ] || die "worktree missing: $WORKTREE"
 [ -f "$WORKTREE/LEDGER.md" ] || die "no LEDGER.md in $WORKTREE. re-run pm-provision.sh."
 
@@ -49,7 +64,12 @@ if [ "$MODE" = "--stop" ]; then
   tmux kill-session -t "$SESSION" 2>/dev/null && say "stopped $SESSION" || say "$SESSION was not running"
   python3 - "$CLAIM" <<'PY'
 import json, sys
-p = sys.argv[1]; d = json.load(open(p)); d["status"] = "STOPPED"
+p = sys.argv[1]
+try:
+    d = json.load(open(p))
+except Exception:
+    d = {}
+d["status"] = "STOPPED"
 json.dump(d, open(p, "w"), indent=2)
 PY
   exit 0
@@ -122,7 +142,10 @@ try:
     r = next(o for o in d if o.get("type") == "result")
 except Exception:
     raise SystemExit
-c = json.load(open(claim))
+try:
+    c = json.load(open(claim))
+except Exception:
+    c = {}
 c["wakes"] = c.get("wakes", 0) + 1
 c["cost_usd"] = round(c.get("cost_usd", 0.0) + float(r.get("total_cost_usd") or 0), 4)
 c["last_wake_cost_usd"] = round(float(r.get("total_cost_usd") or 0), 4)
@@ -160,7 +183,10 @@ import json, re, sys, datetime
 claim, status, ledger = sys.argv[1], sys.argv[2], sys.argv[3]
 now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
-d = json.load(open(claim))
+try:
+    d = json.load(open(claim))
+except Exception:
+    d = {}
 d["heartbeat"] = now
 d["status"] = status
 json.dump(d, open(claim, "w"), indent=2)
