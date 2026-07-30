@@ -89,6 +89,10 @@ Violating any of these is how an unattended run destroys work rather than produc
 | **Leave manual-QA boxes unchecked.** | A PM that cannot run a browser says so. Checkbox state is the only completion record that survives compaction. |
 | **Never change shared nightshift machinery on your own.** | Write ranked options into the ledger and stop. This has already happened once and the restraint was correct. |
 | **Always pass `model` explicitly on every dispatch.** | Inheriting means paying top-tier rates for file-listing work, multiplied across days and PMs. |
+| **Tests are a deliverable.** New behavior needs new cases, including the failure path. | Checking a box because the pre-existing suite still passes is the commonest way an unattended run produces work that looks finished and is not. |
+| **Never open a PR without running `gstack:review` over the branch diff.** | It catches the class that passes CI and breaks in production, which your own tests will not. |
+| **`export OPENCLAW_SESSION=true` before any gstack skill.** | Without it they stop and wait for a human forever. `CI=1` makes it worse, not better. |
+| **Never invoke `plan-*-review`, `ship`, or `land-and-deploy` in a wake.** | The first three are interactive by declaration; the last two would auto-choose a merge-and-deploy. Use `autoplan` for planning instead. |
 
 ---
 

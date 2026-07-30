@@ -266,6 +266,105 @@ unreliably, so watch for false green. The first real run exited **23**, exactly 
 failing count, and every one of those failures was environmental. False red is the more
 dangerous direction overnight, because it invites you to "fix" working code.
 
+## Quality gates
+
+Passing tests is the floor, not the bar. Left alone, a PM optimizes for "task done" and
+you wake up to a large PR that is green and that nobody shaped. These gates exist because
+two unattended days of accretion is exactly when nobody is watching.
+
+### Tests are a deliverable, not a precondition
+
+**A task that adds behavior is not done until it adds tests for that behavior.** Checking
+a box because the existing suite still passes is the most common way an unattended run
+produces work that looks finished and is not.
+
+Concretely: new function or endpoint means new cases, including the failure path. Bug fix
+means a test that reproduces the bug first and passes after. If a thing is genuinely
+untestable here (browser-only behavior, a third-party integration), say so in the ledger
+under `NEEDS-HUMAN-QA` rather than checking the box.
+
+### Simplify your own diff, every third wake
+
+Run the `code-simplifier` agent over **your own diff only**, never the wider codebase:
+
+```
+git diff <base-branch>...HEAD
+```
+
+Its job is duplication you introduced, abstractions you added for one call site, and
+error handling for cases that cannot occur. It must not touch adjacent code you did not
+write; that is scope creep dressed as tidiness.
+
+Every third wake rather than every wake, because the value comes from seeing accumulated
+drift, and running it constantly costs more than it returns.
+
+### Before opening a PR, always
+
+In order, and none of these is optional:
+
+1. **Full suite**, sandbox off, your own test DB. Read the summary line, not the exit code.
+2. **`gstack:review`** over the whole branch diff. It looks for bugs that pass CI and break
+   in production, which is precisely the class your own tests will not catch.
+3. **Resolve or park every finding.** A finding you disagree with goes in the ledger with
+   your reasoning. A finding you cannot resolve blocks the PR. **Never weaken a test or
+   delete an assertion to clear one.**
+4. Only then push, open the PR, and merge per the ship boundary.
+
+A PR opened without step 2 is not finished, it is abandoned.
+
+### Browser QA: you can now do this
+
+Earlier versions of this skill told PMs never to run dev servers, because the vite configs
+hardcode their API target and a second frontend would silently talk to the wrong backend.
+
+`pm-provision.sh` now solves that. Each PM gets a private port block recorded in its
+registry entry as `port_base`, and generated `vite.pm.config.js` files that override only
+the dev-server port and the `/api` proxy target. Shipping config is untouched and the
+generated files are git-excluded.
+
+So for frontend work:
+
+```bash
+PORT=<port_base>  npm start --prefix api          # your own API
+npx vite --config vite.pm.config.js               # from the frontend package
+```
+
+Then run **`gstack:qa`** against your own frontend port. Read `port_base` from your
+registry entry; never assume 9090 or 3001, those belong to the human.
+
+Two things still hold. Never run `docker compose` (fixed container names; a bare `down`
+kills the human's Redis). And if QA genuinely needs something you cannot stand up, leave
+the box unchecked and flag it rather than guessing.
+
+### Planning gates
+
+The three `plan-*-review` skills declare `interactive: true` and call `AskUserQuestion`
+30 to 40 times each. **Never invoke them in a wake.** They belong at kickoff, where a
+human is present.
+
+Use **`gstack:autoplan`** instead. It exists precisely to replace those three with
+automatic decisions against six documented principles, and it writes an Autonomous
+Decision Log you can copy straight into your ledger. Run it when you are about to commit
+to an approach for a sub-plan large enough that being wrong costs a day.
+
+Do not run it on every task. A plan review on a two-line change is theatre.
+
+### The environment lever
+
+Every gstack skill stops and waits for a human unless the environment says otherwise:
+
+```bash
+export OPENCLAW_SESSION=true    # -> auto-choose mode
+```
+
+Verified by running the detector directly. Two traps: `SPAWNED_SESSION` is the name of the
+block *inside* the skills and does **not** work as the env var, and setting `CI=1` yields
+`headless`, which makes gstack **block harder** rather than auto-choose.
+
+**Never call `gstack:ship` or `gstack:land-and-deploy` unattended.** In auto-choose mode
+they would pick the recommended merge-and-deploy option, which is the one decision that
+must never be automatic here.
+
 ## Hard stops: park, do not halt, do not work around
 
 The human's CLAUDE.md names three: needs credentials, destructive to shared state,
