@@ -36,7 +36,7 @@ setup happens at kickoff rather than mid-run.
 | `bash scripts/pm-launch.sh <slug>` | Start the supervised loop: tmux + caffeinate + restart wrapper + dead-PM watchdog. |
 | `bash scripts/pm-launch.sh <slug> --once` | Run exactly one wake in the foreground. Use this before trusting the loop. |
 | `bash scripts/pm-launch.sh <slug> --stop` | Stop that PM's tmux session. |
-| `bash scripts/pm-top.sh` | Interactive view: arrow through PMs, enter to open, tab between LEDGER / WORKERS / OUTPUT. Needs a real terminal. Read-only. |
+| `bash scripts/pm-top.sh` | Interactive. Split view with per-PM stats (runtime, wakes, spend, commits, diff, task progress, workers). Tab between LEDGER / WORKERS / OUTPUT. Keys: `i` message the PM, `a` attach to its tmux pane, `w` wake now, `s` stop. Writes only INBOX.md. |
 | `bash scripts/pm-status.sh [slug]` | Every PM on one screen, blockers first, with spend. The breakfast view. |
 | `bash scripts/pm-teardown.sh <slug> [--branch]` | Retire a PM in the only safe order: stop, remove, prune, mark DONE. Refuses if work is uncommitted. |
 | `bash scripts/pm-version.sh check` | Report if a nightshift update exists. Kickoff only, throttled, never pulls. |
@@ -124,6 +124,16 @@ wrong cause.
   and returns silent false negatives.
 
 ---
+
+## How a human steers a running PM
+
+You cannot type into a wake. Each wake is `claude -p`: prompt in, result out, exit. That
+non-interactivity is what makes "resume from files" true rather than aspirational.
+
+To steer one, append to `<worktree>/INBOX.md` (or press `i` in `pm-top`). The PM reads it
+at the top of every wake and treats each entry as a claim to verify, never an instruction.
+`tmux attach -t pm-<slug>` lets you watch the supervisor live, but the keyboard there
+talks to the supervisor's shell, not to Claude.
 
 ## State model
 
