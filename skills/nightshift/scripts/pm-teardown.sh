@@ -108,6 +108,11 @@ json.dump(d, open(p, "w"), indent=2); open(p, "a").write("\n")
 PY
 say "registry marked DONE (kept on purpose)"
 
+# If nightshift moved during the run, say so. It explains why an old PM and a
+# new one behave differently, which is otherwise a confusing thing to discover.
+PINNED=$(python3 -c "import json;print(json.load(open('$CLAIM')).get('plugin_sha') or '')" 2>/dev/null)
+[ -n "$PINNED" ] && bash "$SKILL_DIR/scripts/pm-version.sh" drift "$PINNED" || true
+
 COST=$(python3 -c "import json;print(json.load(open('$CLAIM')).get('cost_usd','?'))" 2>/dev/null)
 WAKES=$(python3 -c "import json;print(json.load(open('$CLAIM')).get('wakes','?'))" 2>/dev/null)
 printf '\n  %s torn down.  %s wakes,  $%s total\n\n' "$SLUG" "$WAKES" "$COST"

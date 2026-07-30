@@ -379,6 +379,9 @@ done
 # 7. Ledger skeleton. The PM's identity lives here, not in any session.
 # ---------------------------------------------------------------------------
 NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+# Pin the plugin version. Every wake of this PM uses what it started with, so an
+# update landing mid-run cannot change the rules between wake 4 and wake 5.
+PLUGIN_SHA="$(bash "$(dirname "$0")/pm-version.sh" sha 2>/dev/null || true)"
 if [ -f "$WORKTREE/LEDGER.md" ]; then
   say "LEDGER.md already exists, leaving it alone"
 else
@@ -445,12 +448,13 @@ fi
 # ---------------------------------------------------------------------------
 # 8. Registry record.
 # ---------------------------------------------------------------------------
-PORT_BASE="$PORT_BASE" python3 - "$CLAIM" "$SLUG" "$BRIEF" "$BRANCH" "$WORKTREE" "$TEST_DB" "$NOW" "${PACKAGES[@]}" <<'PY'
+PORT_BASE="$PORT_BASE" PLUGIN_SHA="$PLUGIN_SHA" python3 - "$CLAIM" "$SLUG" "$BRIEF" "$BRANCH" "$WORKTREE" "$TEST_DB" "$NOW" "${PACKAGES[@]}" <<'PY'
 import json, os, sys
 claim, slug, brief, branch, wt, db, now, *pkgs = sys.argv[1:]
 json.dump({
     "slug": slug, "feature": brief, "branch": branch, "worktree": wt,
     "port_base": int(os.environ.get("PORT_BASE", "0")) or None,
+    "plugin_sha": os.environ.get("PLUGIN_SHA") or None,
     "test_db": db, "packages": pkgs, "tmux_session": f"pm-{slug}",
     "started": now, "heartbeat": now, "status": "RUNNING",
 }, open(claim, "w"), indent=2)

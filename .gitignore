@@ -1,2 +1,4 @@
 node_modules/
 .DS_Store
+.nightshift-version-check
+.nightshift-wake.json

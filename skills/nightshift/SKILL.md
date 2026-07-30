@@ -57,6 +57,23 @@ acted on all night. Tell the human plainly that this is a one-time cost per repo
 Also confirm the base branch from that file. Never infer it from recent PR bases; release
 PRs and feature PRs commonly target different branches.
 
+### 2b. Check for a nightshift update
+
+```bash
+bash <scripts>/pm-version.sh check
+```
+
+Throttled to once an hour and silent when it has nothing to say or cannot reach the
+network. If an update exists it prints the commits and stops there; it never pulls.
+
+Kickoff is the only place this runs, and it never applies anything, because an update
+landing between wake 4 and wake 5 would change the rules a PM is mid-way through
+following. `pm-provision.sh` pins the current SHA into the registry, so a running PM
+keeps the version it started with whatever you do here.
+
+If the human wants the update, they run `git pull` in the plugin directory and you
+re-read the skill before continuing.
+
 ### 3. Confirm once, then never again
 
 Present the whole configuration in a single `AskUserQuestion`, and say explicitly that

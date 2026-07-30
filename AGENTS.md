@@ -37,6 +37,7 @@ setup happens at kickoff rather than mid-run.
 | `bash scripts/pm-launch.sh <slug> --stop` | Stop that PM's tmux session. |
 | `bash scripts/pm-status.sh [slug]` | Every PM on one screen, blockers first, with spend. The breakfast view. |
 | `bash scripts/pm-teardown.sh <slug> [--branch]` | Retire a PM in the only safe order: stop, remove, prune, mark DONE. Refuses if work is uncommitted. |
+| `bash scripts/pm-version.sh check` | Report if a nightshift update exists. Kickoff only, throttled, never pulls. |
 | `agents/repo-recon.md` | Agent definition. Generates a repo's `.nightshift/repo-facts.md`. Run once per repo. |
 | `skills/nightshift/SKILL.md` | The PM's own operating manual. A PM reads this, not this file. |
 
