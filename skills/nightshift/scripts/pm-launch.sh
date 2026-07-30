@@ -112,7 +112,19 @@ PROMPT
 #
 # UNTESTED as of this writing. The flag and the settings key are both documented and
 # `claude --help` confirms --settings, but no PM has yet run a wake with it enabled.
-WORKFLOW_SETTINGS='{"ultracode":true,"workflowSizeGuideline":"small"}'
+
+# Settings passed to EVERY wake, so a PM's behavior does not depend on whatever the
+# human's global settings happen to be.
+#
+# askUserQuestionTimeout is the important one. It defaults to "never", which means a
+# question blocks until the run ages out. For a PM that is the worst possible default:
+# nobody is there, so waiting cannot produce an answer, it only converts a bug into a
+# stall. 60s is the shortest the enum allows and still far longer than needed, because
+# a question during a wake is already a symptom of an under-specified dispatch.
+#
+# The human's own sessions are unaffected by this; it applies only to wakes.
+WAKE_SETTINGS='{"askUserQuestionTimeout":"60s"}'
+WORKFLOW_SETTINGS='{"askUserQuestionTimeout":"60s","ultracode":true,"workflowSizeGuideline":"small"}'
 
 run_one_wake() {
   cd "$WORKTREE"
@@ -131,7 +143,7 @@ run_one_wake() {
       claude -p "$WAKE_PROMPT" --settings "$WORKFLOW_SETTINGS" --output-format json > "$OUT"
   else
     OPENCLAW_SESSION=true PM_SLUG="$SLUG" \
-      claude -p "$WAKE_PROMPT" --output-format json > "$OUT"
+      claude -p "$WAKE_PROMPT" --settings "$WAKE_SETTINGS" --output-format json > "$OUT"
   fi
   rc=$?
   CLAIM="$CLAIM" OUT="$OUT" python3 -c '
