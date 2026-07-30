@@ -7,10 +7,11 @@
 # Usage: pm-status.sh [slug]     (no arg = all PMs)
 
 set -euo pipefail
-# Resolve the repo from the current git worktree rather than pinning a path, so this
-# works in any checkout. Run these scripts from inside the repo you want a PM to work on.
-REPO="$(git rev-parse --show-toplevel 2>/dev/null)"
-[ -n "$REPO" ] || { echo "error: not inside a git repository. cd into your repo first." >&2; exit 1; }
+# Resolve the primary checkout (see pm-launch.sh): linked worktrees must not
+# redefine REPO as themselves or the registry path is wrong.
+GIT_COMMON="$(git rev-parse --git-common-dir 2>/dev/null)" || true
+[ -n "$GIT_COMMON" ] || { echo "error: not inside a git repository. cd into your repo first." >&2; exit 1; }
+REPO="$(cd "$GIT_COMMON/.." && pwd)"
 REGISTRY="$REPO/.claude/worktrees/registry"   # see pm-provision.sh for why it lives here
 [ -d "$REGISTRY" ] || { echo "no PMs have ever been provisioned."; exit 0; }
 

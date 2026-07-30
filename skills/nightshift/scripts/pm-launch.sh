@@ -28,10 +28,13 @@
 
 set -euo pipefail
 
-# Resolve the repo from the current git worktree rather than pinning a path, so this
-# works in any checkout. Run these scripts from inside the repo you want a PM to work on.
-REPO="$(git rev-parse --show-toplevel 2>/dev/null)"
-[ -n "$REPO" ] || { echo "error: not inside a git repository. cd into your repo first." >&2; exit 1; }
+# Resolve the primary checkout, not a linked worktree path. In a PM worktree,
+# `git rev-parse --show-toplevel` is the worktree itself, and the registry lives on
+# the primary checkout under `.claude/worktrees/registry/`. Using toplevel there
+# makes every supervised --once fail with "no registry claim".
+GIT_COMMON="$(git rev-parse --git-common-dir 2>/dev/null)" || true
+[ -n "$GIT_COMMON" ] || { echo "error: not inside a git repository. cd into your repo first." >&2; exit 1; }
+REPO="$(cd "$GIT_COMMON/.." && pwd)"
 WT_ROOT="$REPO/.claude/worktrees"          # see pm-provision.sh for why it lives here
 REGISTRY="$WT_ROOT/registry"
 SKILL_DIR="$(cd "$(dirname "$0")/.." && pwd)"
