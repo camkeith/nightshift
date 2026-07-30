@@ -142,7 +142,9 @@ both persist onto the claim so later `--once` wakes (and restarts) keep the choi
 `last_model` is the host model id for that provider (e.g. `gpt-5.6-sol`); `pm-top`
 renders it as `provider/model`. When the provider or model changes, the previous
 `provider/model` is appended to `former_models` (capped at 8) and shown as
-`current · was …`. Non-Claude providers run the same ledger-driven loop but
+`current · was …`. Each wake also appends to the worktree's
+`.nightshift-model-history.jsonl` (needed for cursor-agent, whose wake JSON omits
+model). Non-Claude providers run the same ledger-driven loop but
 do not get Claude Code's `Agent` / `Workflow` tools or the nightshift skill auto-load.
 
 ### What the registry arbitrates

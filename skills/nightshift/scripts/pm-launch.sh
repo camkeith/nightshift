@@ -288,10 +288,11 @@ WORKFLOW_SETTINGS='{"askUserQuestionTimeout":"60s","ultracode":true,"workflowSiz
 # Best-effort wake accounting. Claude's result JSON has total_cost_usd. Other providers
 # may or may not; never invent a number.
 record_wake() {
-  CLAIM="$CLAIM" OUT="$1" PROVIDER="$PROVIDER" MODEL="${MODEL:-}" python3 -c '
-import json, os, re
+  CLAIM="$CLAIM" OUT="$1" PROVIDER="$PROVIDER" MODEL="${MODEL:-}" WORKTREE="$WORKTREE" python3 -c '
+import json, os, re, time
 claim, out, provider = os.environ["CLAIM"], os.environ["OUT"], os.environ["PROVIDER"]
 hint = (os.environ.get("MODEL") or "").strip()
+worktree = (os.environ.get("WORKTREE") or "").strip()
 
 def short(m):
     if not m or m == "<synthetic>":
@@ -384,6 +385,20 @@ if cost is not None:
 if turns is not None:
     c["last_wake_turns"] = turns
 json.dump(c, open(claim, "w"), indent=2); open(claim, "a").write("\n")
+
+# Append-only wake model log (cursor-agent JSON has no model field; this is how
+# pm-top learns former cursor/codex models across wakes).
+if model and worktree and os.path.isdir(worktree):
+    try:
+        with open(os.path.join(worktree, ".nightshift-model-history.jsonl"), "a") as fh:
+            fh.write(json.dumps({
+                "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                "provider": provider,
+                "model": model,
+            }) + "\n")
+    except Exception:
+        pass
+
 if text:
     print(str(text)[:2000])
 ' 2>/dev/null || true

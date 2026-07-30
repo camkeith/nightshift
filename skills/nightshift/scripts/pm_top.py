@@ -454,6 +454,40 @@ def _wake_json_model(worktree):
     return ""
 
 
+def model_history_from_worktree(wt):
+    """Chronological provider/model labels from .nightshift-model-history.jsonl.
+
+    cursor-agent's wake JSON omits model, so this file is the durable trail for
+    former cursor (and other) models across wakes.
+    """
+    path = os.path.join(wt or "", ".nightshift-model-history.jsonl")
+    out = []
+    seen = set()
+    if not os.path.isfile(path):
+        return out
+    try:
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                try:
+                    o = json.loads(line)
+                except Exception:
+                    continue
+                prov = (o.get("provider") or "").strip() or "claude"
+                mdl = short_model(o.get("model") or "")
+                if not mdl:
+                    continue
+                label = f"{prov}/{mdl}"
+                if label in seen:
+                    # keep chronological unique; move to end on repeat
+                    out = [x for x in out if x != label]
+                else:
+                    seen.add(label)
+                out.append(label)
+    except Exception:
+        pass
+    return out
+
+
 def provider_model_label(p):
     """Display as provider/model, plus former models when it changed."""
     provider = (p.get("provider") or "claude").strip() or "claude"
@@ -473,6 +507,10 @@ def provider_model_label(p):
                     break
     current = f"{provider}/{mdl or '?'}"
     former = list(p.get("former_models") or [])
+    # Worktree wake log (especially important for cursor-agent).
+    for label in model_history_from_worktree(p.get("worktree", "")):
+        if label not in former:
+            former.append(label)
     # Also surface other models seen in this provider's usage (same wake history).
     for m in pm_usage(p).get("models") or []:
         sm = short_model(m)
@@ -596,11 +634,30 @@ def codex_usage_for_worktree(wt):
 
 
 def cursor_usage_for_worktree(wt):
+    """Token totals from the latest cursor-agent wake JSON (+ model history).
+
+    cursor-agent --output-format json uses camelCase usage keys and omits model;
+    model comes from cli-config / claim / .nightshift-model-history.jsonl.
+    """
     tot = {"model": "", "in": 0, "cache_w": 0, "cache_r": 0, "out": 0, "msgs": 0, "models": []}
     models = {}
+    order = []
+
+    def note_model(m):
+        sm = short_model(m)
+        if not sm:
+            return
+        models[sm] = models.get(sm, 0) + 1
+        if sm not in order:
+            order.append(sm)
+
     sm = short_model(_cursor_default_model())
     if sm:
-        models[sm] = 1
+        note_model(sm)
+    for label in model_history_from_worktree(wt):
+        if label.startswith("cursor/"):
+            note_model(label.split("/", 1)[1])
+
     path = os.path.join(wt or "", ".nightshift-wake.json")
     if os.path.isfile(path):
         try:
@@ -623,18 +680,21 @@ def cursor_usage_for_worktree(wt):
                 if not isinstance(u, dict):
                     continue
                 tot["msgs"] += 1
-                tot["in"] += int(u.get("input_tokens") or u.get("prompt_tokens") or 0)
-                tot["out"] += int(u.get("output_tokens") or u.get("completion_tokens") or 0)
-                tot["cache_r"] += int(u.get("cache_read_input_tokens") or u.get("cached_tokens") or 0)
-                tot["cache_w"] += int(u.get("cache_creation_input_tokens") or 0)
-                m = short_model(o.get("model") or msg.get("model"))
-                if m:
-                    models[m] = models.get(m, 0) + 1
+                # cursor-agent: inputTokens; Claude-ish: input_tokens
+                tot["in"] += int(u.get("inputTokens") or u.get("input_tokens")
+                                 or u.get("prompt_tokens") or 0)
+                tot["out"] += int(u.get("outputTokens") or u.get("output_tokens")
+                                  or u.get("completion_tokens") or 0)
+                tot["cache_r"] += int(u.get("cacheReadTokens") or u.get("cache_read_input_tokens")
+                                      or u.get("cached_tokens") or 0)
+                tot["cache_w"] += int(u.get("cacheWriteTokens") or u.get("cache_creation_input_tokens")
+                                      or 0)
+                note_model(o.get("model") or msg.get("model"))
         except Exception:
             pass
-    tot["models"] = sorted(models, key=lambda m: -models[m])
+    tot["models"] = order or sorted(models, key=lambda m: -models[m])
     if tot["models"]:
-        tot["model"] = tot["models"][0]
+        tot["model"] = tot["models"][-1]
     return tot
 
 
