@@ -86,6 +86,25 @@ bash $NS/pm-launch.sh <slug> --stop      # stop one
 
 A PM stops on its own when it reaches `READY-FOR-HUMAN` or `DONE`.
 
+### Without leaving Claude Code
+
+Ask Claude to run `pm-watch.sh` in the background. Claude Code's footer is arrow-navigable
+and background tasks are one of the things that populate it, so the watcher becomes an
+entry you can reach with the keyboard:
+
+| Key | Action |
+|---|---|
+| `down` | move into the footer |
+| `left` / `right` | move between footer entries |
+| `enter` | open the selected one and read its output |
+| `esc` | back to the prompt |
+
+It prints one line per state change, not per poll, so opening it shows a history of what
+moved rather than the same three rows stamped a hundred times.
+
+For the full view over the top of Claude Code, `pm-overlay-install.sh` binds a tmux key to
+float `pm-top` above the session; Esc drops you back exactly where you were.
+
 ### Driving it directly
 
 `/nightshift` is a wrapper around three scripts. Run them yourself if you want more
@@ -99,6 +118,7 @@ control. They need the sandbox disabled, so either a terminal or an agent with a
 | `pm-launch.sh <slug> --stop` | Stop that PM |
 | `pm-status.sh [slug]` | Every PM on one screen, blockers first |
 | `pm-top.sh` | Interactive. Arrow through PMs, `<-/->` panes, enter to open a worker |
+| `pm-watch.sh` | One line per state change. Run it in the background to get a footer entry you can arrow into |
 | `pm-overlay-install.sh` | Bind a tmux key to float `pm-top` over Claude Code; Esc returns |
 | `pm-teardown.sh <slug>` | Retire a PM safely: stop, remove, prune, mark done |
 

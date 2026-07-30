@@ -6,16 +6,21 @@
 #
 # WHY TMUX AND NOT CLAUDE CODE ITSELF
 #
-# Claude Code has no extension point for this, and it is worth knowing why so nobody
-# spends an afternoon looking:
+# Claude Code's footer IS keyboard-navigable, and pm-watch.sh uses that: run it as a
+# background task and it becomes a footer entry you can arrow to and open. What the footer
+# cannot do is host THIS view. It shows a task's streamed output; it does not give a
+# third-party program a terminal, so a curses UI has nowhere to draw and no keystrokes.
+#
+# Nothing else in the CLI closes that gap, which is worth writing down so nobody spends an
+# afternoon looking:
 #
 #   * `statusLine` runs a command and renders its stdout. It is a string producer with
-#     no focus, no input, and no click target. There is nothing to arrow into.
+#     no focus, no input, and no click target.
 #   * There is no third-party panel API. /workflows is built into the binary. The
 #     settings schema offers statusLine, subagentStatusLine, footerLinksRegexes and
 #     prUrlTemplate; none of them register a view.
-#   * Keybindings map to internal actions only (app:, chat:, task:, ...). None shells out.
-#   * footerLinksRegexes is the one interactive footer feature and it opens a URL.
+#   * Keybindings map to internal actions only (app:, chat:, footer:, ...). None shells out.
+#   * footerLinksRegexes badges open a URL, not a local program.
 #
 # tmux, however, can float a program over whatever pane is running, which is exactly the
 # behavior wanted: a key opens the overlay, Esc or q closes it, Claude Code is untouched
