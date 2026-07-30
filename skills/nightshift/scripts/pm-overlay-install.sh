@@ -1,8 +1,13 @@
 #!/usr/bin/env bash
-# pm-overlay-install.sh — bind a key that overlays pm-top on top of Claude Code.
+# pm-overlay-install.sh — one keystroke floats the nightshift view over Claude Code.
 #
-#   bash pm-overlay-install.sh          add the binding to ~/.tmux.conf
-#   bash pm-overlay-install.sh --print  show what it would add, change nothing
+#   bash pm-overlay-install.sh                install (default key: F9)
+#   bash pm-overlay-install.sh --key F12      pick a different no-prefix key
+#   bash pm-overlay-install.sh --print        show what it would write, change nothing
+#   bash pm-overlay-install.sh --uninstall    remove the bindings again
+#
+# Re-running replaces the block it wrote last time, so changing the key does not leave the
+# old one bound.
 #
 # WHY TMUX AND NOT CLAUDE CODE ITSELF
 #
@@ -25,48 +30,90 @@
 # tmux, however, can float a program over whatever pane is running, which is exactly the
 # behavior wanted: a key opens the overlay, Esc or q closes it, Claude Code is untouched
 # underneath and never even knows it happened.
+#
+# TWO BINDINGS ARE INSTALLED, DELIBERATELY
+#
+#   <key>          no prefix. One keystroke from inside Claude Code. tmux swallows it
+#                  globally, which is why the default is F9: Claude Code binds Ctrl and
+#                  Alt combinations heavily and F9 is not among them.
+#   prefix + C-n   the polite fallback, for when something else wants that F-key.
 
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 CONF="$HOME/.tmux.conf"
-KEY="${PM_OVERLAY_KEY:-C-n}"          # prefix + Ctrl-n
+KEY="${PM_OVERLAY_KEY:-F9}"
+BEGIN="# --- nightshift overlay (added by pm-overlay-install.sh) ---"
+END="# --- end nightshift overlay ---"
+MODE="install"
 
-read -r -d '' SNIPPET <<EOF || true
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --key) KEY="${2:?--key needs a value}"; shift 2 ;;
+    --print) MODE="print"; shift ;;
+    --uninstall) MODE="uninstall"; shift ;;
+    *) echo "unknown argument: $1" >&2; exit 2 ;;
+  esac
+done
 
-# --- nightshift overlay (added by pm-overlay-install.sh) ---
-# prefix + ${KEY}  floats pm-top over the current pane. Esc or q closes it.
-# -E closes the popup when the program exits, so pm-top's own q just works.
-bind-key ${KEY} display-popup -E -w 90% -h 85% \\
+snippet() {
+  cat <<EOF
+$BEGIN
+# ${KEY} floats pm-top over the current pane. Esc or q closes it.
+# -E closes the popup when the program exits, so pm-top's own q just works, and so does
+# 'a' (switch to a PM's session) which exits on purpose to let the popup get out of the way.
+bind-key -n ${KEY} display-popup -E -w 92% -h 88% \\
   "cd '#{pane_current_path}' && bash '${HERE}/pm-top.sh'"
-# --- end nightshift overlay ---
+bind-key C-n display-popup -E -w 92% -h 88% \\
+  "cd '#{pane_current_path}' && bash '${HERE}/pm-top.sh'"
+$END
 EOF
+}
 
-if [ "${1:-}" = "--print" ]; then
-  printf '%s\n' "$SNIPPET"
-  exit 0
-fi
+strip_block() {
+  [ -f "$CONF" ] || return 0
+  # awk rather than sed -i: BSD and GNU sed disagree on -i, and this has to work on macOS
+  # without silently leaving a .bak file next to the user's config.
+  awk -v b="$BEGIN" -v e="$END" '
+    $0 == b { skip = 1 } !skip { print } $0 == e { skip = 0 }
+  ' "$CONF" > "$CONF.ns-tmp" && mv "$CONF.ns-tmp" "$CONF"
+}
+
+if [ "$MODE" = "print" ]; then snippet; exit 0; fi
 
 command -v tmux >/dev/null || { echo "tmux is not installed: brew install tmux" >&2; exit 1; }
 
-if [ -f "$CONF" ] && grep -q "nightshift overlay" "$CONF"; then
-  echo "already installed in $CONF"
-else
-  printf '%s\n' "$SNIPPET" >> "$CONF"
-  echo "added the binding to $CONF"
+# display-popup landed in tmux 3.2. Without this check the binding installs fine and then
+# does nothing at all when pressed, which is a miserable thing to debug.
+V=$(tmux -V | sed 's/[^0-9.]//g')
+if [ "$(printf '%s\n3.2\n' "$V" | sort -V | head -1)" != "3.2" ]; then
+  echo "tmux $V is too old for display-popup; 3.2+ required (brew upgrade tmux)" >&2
+  exit 1
 fi
+
+strip_block
+if [ "$MODE" = "uninstall" ]; then
+  echo "removed the nightshift bindings from $CONF"
+  echo "reload with: tmux source-file ~/.tmux.conf"
+  exit 0
+fi
+
+printf '\n%s\n' "$(snippet)" >> "$CONF"
+echo "bound ${KEY} (and prefix + C-n) in $CONF"
 
 cat <<EOF
 
   Reload tmux config:   tmux source-file ~/.tmux.conf
-  Then, inside tmux:    prefix + ${KEY}
+  Then press:           ${KEY}
 
-  If you are not already running Claude Code inside tmux, start it that way once:
+  Claude Code has to be running INSIDE tmux for this to work, because tmux is what draws
+  the overlay. If it is not, start it that way once:
 
       tmux new -s work
       claude
 
-  After that, prefix + ${KEY} floats the nightshift view over your session and Esc or q
-  drops you straight back into Claude Code, exactly where you were.
+  ${KEY}    open the nightshift view over Claude Code
+  esc / q  close it, back to exactly where you were
+  a        drop into the selected PM's own session; prefix + L returns here
 
 EOF

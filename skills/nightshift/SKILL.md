@@ -177,11 +177,30 @@ Read `pm-provision.sh`'s verification block before launching. It is built to fai
 rather than hand over a half-built worktree; if it fails, fix that before starting a PM
 on top of it.
 
+### 4b. Start the footer watcher
+
+Once every PM is launched, start the watcher **with `run_in_background: true`, sandboxed,
+from this session**:
+
+```bash
+bash <plugin>/skills/nightshift/scripts/pm-watch.sh
+```
+
+Both details matter. Claude Code's footer is arrow-navigable and background tasks are one
+of the things that populate it, so this becomes an entry the human reaches with `down`
+then `enter` without leaving the CLI. It only gets that slot by being a background task of
+*their* session; the same script started from tmux is invisible to the footer.
+
+Do it every kickoff and do not check first. The script holds a PID lockfile and exits
+immediately if a live watcher already exists, so a second launch is a no-op rather than a
+duplicate footer entry.
+
 ### 5. Hand off and stop
 
 Tell the human, briefly:
 
 - what is running, on which branch, in which worktree
+- that `down` then `enter` opens the watcher in the footer, from right where they are
 - `bash <plugin>/skills/nightshift/scripts/pm-status.sh` to check on it
 - `bash <plugin>/skills/nightshift/scripts/pm-launch.sh <slug> --stop` to stop it
 - that it will stop on its own at `READY-FOR-HUMAN` or `DONE`

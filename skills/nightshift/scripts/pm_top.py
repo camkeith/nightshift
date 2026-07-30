@@ -21,8 +21,11 @@ WHY YOU CANNOT TYPE INTO A PM
 
 Each wake is a fresh `claude -p`: prompt in, result out, exit. It is non-interactive by
 construction, which is what makes "resume from files" true rather than aspirational. So
-`a` attaches you to the supervisor's tmux pane where you can watch, and `i` is how you
+`a` puts you in the supervisor's tmux session where you can watch, and `i` is how you
 actually say something the PM will act on.
+
+`a` switches the client when it is already inside tmux (the overlay case) and attaches
+when it is not. From the overlay, prefix + L returns you to Claude Code.
 """
 
 import curses
@@ -846,8 +849,17 @@ def main(stdscr, repo, skill_dir):
                 S["flash"], S["flash_at"] = ("queued" if ok else "failed"), time.time()
                 S["last"] = 0
         elif k == ord("a") and p:
+            sess = tmux_session(p)
+            if os.environ.get("TMUX"):
+                # Already inside tmux, which is always true when pm-top is running in the
+                # overlay popup. `tmux attach` refuses to nest, so switch the client
+                # instead and then fall out of the loop: the popup was opened with -E, so
+                # exiting closes it and drops the user straight into the PM's session.
+                # prefix + L gets them back to Claude Code.
+                subprocess.run(["tmux", "switch-client", "-t", sess], capture_output=True)
+                return
             curses.endwin()
-            os.execvp("tmux", ["tmux", "attach", "-t", tmux_session(p)])
+            os.execvp("tmux", ["tmux", "attach", "-t", sess])
         elif k == ord("w") and p:
             run_detached(["bash", os.path.join(skill_dir, "scripts", "pm-launch.sh"),
                           p["slug"], "--once"])

@@ -88,9 +88,9 @@ A PM stops on its own when it reaches `READY-FOR-HUMAN` or `DONE`.
 
 ### Without leaving Claude Code
 
-Ask Claude to run `pm-watch.sh` in the background. Claude Code's footer is arrow-navigable
-and background tasks are one of the things that populate it, so the watcher becomes an
-entry you can reach with the keyboard:
+`/nightshift` starts a watcher for you at kickoff. Claude Code's footer is arrow-navigable
+and background tasks are one of the things that populate it, so the watcher is an entry
+you can reach with the keyboard:
 
 | Key | Action |
 |---|---|

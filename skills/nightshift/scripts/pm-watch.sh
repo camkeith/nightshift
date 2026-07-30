@@ -102,9 +102,34 @@ if [ "$ONCE" = "--once" ]; then
   exit 0
 fi
 
+# Single-instance guard. Kickoff starts a watcher every time it runs, so without this a
+# second feature launched on Tuesday leaves two watchers in the footer reporting the same
+# three PMs.
+#
+# Liveness is a HEARTBEAT, not `kill -0`. Claude Code's sandbox denies both `ps` and
+# `kill`, so a signal probe does not return false for a dead process, it errors for every
+# process, and the guard would wave through every duplicate. The running watcher rewrites
+# this file each poll instead, and a lock older than a few intervals is treated as
+# abandoned, which also covers a task killed from /tasks that never got to clean up.
+LOCK="$REPO/.claude/worktrees/.watch.pid"
+STALE=$(( INTERVAL * 3 )); [ "$STALE" -lt 90 ] && STALE=90
+mkdir -p "$(dirname "$LOCK")"
+if [ -f "$LOCK" ] && NS_LOCK="$LOCK" NS_STALE="$STALE" python3 -c '
+import os, sys, time
+sys.exit(0 if time.time() - os.stat(os.environ["NS_LOCK"]).st_mtime
+         < float(os.environ["NS_STALE"]) else 1)' 2>/dev/null; then
+  echo "a watcher is already running (pid $(cat "$LOCK" 2>/dev/null)); nothing to do"
+  exit 0
+fi
+echo $$ > "$LOCK"
+# Only clear a lock we still own. Without the check, a duplicate that correctly declined
+# to start would delete the live watcher's lock on its way out.
+trap '[ "$(cat "$LOCK" 2>/dev/null)" = "$$" ] && rm -f "$LOCK"' EXIT INT TERM
+
 echo "watching nightshift PMs in $(basename "$REPO") · one line per change"
 prev=""
 while true; do
+  echo $$ > "$LOCK"        # heartbeat: this file's mtime is what "still alive" means
   cur=$(snapshot)
   if [ "$cur" != "$prev" ]; then
     if [ "$cur" = "NONE" ]; then
