@@ -102,34 +102,33 @@ if [ "$ONCE" = "--once" ]; then
   exit 0
 fi
 
-# Single-instance guard. Kickoff starts a watcher every time it runs, so without this a
-# second feature launched on Tuesday leaves two watchers in the footer reporting the same
-# three PMs.
+# Exactly one watcher, and it is always the NEWEST one. Kickoff starts a watcher every
+# time it runs, so something has to arbitrate.
 #
-# Liveness is a HEARTBEAT, not `kill -0`. Claude Code's sandbox denies both `ps` and
-# `kill`, so a signal probe does not return false for a dead process, it errors for every
-# process, and the guard would wave through every duplicate. The running watcher rewrites
-# this file each poll instead, and a lock older than a few intervals is treated as
-# abandoned, which also covers a task killed from /tasks that never got to clean up.
+# Newest-wins rather than first-wins, because the thing that matters is not "a watcher
+# process exists" but "a watcher is a background task of the session you are looking at".
+# A watcher outlives the Claude Code process that started it: the old one keeps running as
+# an orphan while its footer entry is gone with its session. First-wins let that orphan
+# hold the lock forever and the live session got no entry at all.
+#
+# The protocol is one file and no signals, which matters because the sandbox denies both
+# `ps` and `kill`: a starting watcher claims the lock, and every watcher re-reads it each
+# poll and exits the moment it sees a token that is not its own.
 LOCK="$REPO/.claude/worktrees/.watch.pid"
-STALE=$(( INTERVAL * 3 )); [ "$STALE" -lt 90 ] && STALE=90
+TOKEN="$$-$(date +%s)"
 mkdir -p "$(dirname "$LOCK")"
-if [ -f "$LOCK" ] && NS_LOCK="$LOCK" NS_STALE="$STALE" python3 -c '
-import os, sys, time
-sys.exit(0 if time.time() - os.stat(os.environ["NS_LOCK"]).st_mtime
-         < float(os.environ["NS_STALE"]) else 1)' 2>/dev/null; then
-  echo "a watcher is already running (pid $(cat "$LOCK" 2>/dev/null)); nothing to do"
-  exit 0
-fi
-echo $$ > "$LOCK"
-# Only clear a lock we still own. Without the check, a duplicate that correctly declined
-# to start would delete the live watcher's lock on its way out.
-trap '[ "$(cat "$LOCK" 2>/dev/null)" = "$$" ] && rm -f "$LOCK"' EXIT INT TERM
+printf '%s\n' "$TOKEN" > "$LOCK"
+# Only clear a lock we still own, or a watcher that just handed over would delete the
+# incoming one's claim on its way out.
+trap '[ "$(cat "$LOCK" 2>/dev/null)" = "$TOKEN" ] && rm -f "$LOCK"' EXIT INT TERM
 
 echo "watching nightshift PMs in $(basename "$REPO") · one line per change"
 prev=""
 while true; do
-  echo $$ > "$LOCK"        # heartbeat: this file's mtime is what "still alive" means
+  if [ "$(cat "$LOCK" 2>/dev/null)" != "$TOKEN" ]; then
+    echo "a newer watcher took over; exiting"
+    exit 0
+  fi
   cur=$(snapshot)
   if [ "$cur" != "$prev" ]; then
     if [ "$cur" = "NONE" ]; then
