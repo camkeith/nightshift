@@ -33,31 +33,44 @@ REPO="$(git rev-parse --show-toplevel 2>/dev/null)"
 # convention in this repo, so this adds nothing new to reason about.
 WT_ROOT="$REPO/.claude/worktrees"
 REGISTRY="$WT_ROOT/registry"
-# ---------------------------------------------------------------------------
-# PER-REPO CONFIG. Edit this block for your repository.
-#
-# Everything from here to the end of ENV_FILES is repo-specific. `repo-recon` tells
-# you exactly what belongs here: run it first and read the "Worktree provisioning"
-# and "Ship boundary" sections of the repo-facts.md it produces.
-#
-# Not yet auto-derived. That is the main known limitation of v0.1.0, and it is a
-# deliberate one: guessing a repo's gitignored-but-required files wrong produces a
-# worktree that looks fine and cannot run anything, which is worse than asking.
-# ---------------------------------------------------------------------------
-BASE_BRANCH="develop"
-
-# The four gitignored files a fresh worktree does NOT inherit. Provisioning that
-# skips these produces a worktree that looks fine and cannot run anything.
-ENV_FILES=(
-  "api/.env"
-  "client/.env"
-  "public-client/.env"
-  "admin-client/.env.local"
-)
 
 die() { printf '\033[31merror:\033[0m %s\n' "$*" >&2; exit 1; }
 say() { printf '\033[36m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[33mwarn:\033[0m %s\n' "$*" >&2; }
+# ---------------------------------------------------------------------------
+# PER-REPO CONFIG, read from .nightshift/config.json rather than edited in here.
+#
+# `pm-config.sh derive` builds that file from evidence: env_files are the files that
+# EXIST locally and are IGNORED by git (precisely what a fresh worktree lacks),
+# packages are directories containing a package.json, frontends are vite configs
+# actually present, base_branch prefers a real staging branch.
+#
+# It is written with "confirmed": false and provisioning refuses to run until a human
+# reads it and flips that. Getting env_files wrong yields a worktree that looks
+# completely fine and cannot run anything, so the one-time review is the point, not
+# ceremony. On the first real derivation it also picked the dev database name instead
+# of the test one, which is exactly the class of error the review catches.
+# ---------------------------------------------------------------------------
+NS_CFG="$REPO/.nightshift/config.json"
+if [ ! -f "$NS_CFG" ]; then
+  warn "no $NS_CFG"
+  warn "deriving one now; it will need your review before a PM can run."
+  bash "$(dirname "$0")/pm-config.sh" derive || true
+  die "config derived but unconfirmed. Read $NS_CFG, set \"confirmed\": true, re-run."
+fi
+bash "$(dirname "$0")/pm-config.sh" validate || die "config not usable (see above)"
+
+BASE_BRANCH=$(python3 -c "import json;print(json.load(open('$NS_CFG'))['base_branch'])")
+TEST_DB_PREFIX=$(python3 -c "import json;print(json.load(open('$NS_CFG')).get('test_db_prefix','app_test'))")
+PORT_START=$(python3 -c "import json;print(json.load(open('$NS_CFG')).get('port_base_start',9200))")
+VALID_PKGS=$(python3 -c "import json;print(' '.join(json.load(open('$NS_CFG'))['packages']))")
+mapfile -t ENV_FILES < <(python3 -c "
+import json
+for e in json.load(open('$NS_CFG'))['env_files']: print(e)
+") 2>/dev/null || ENV_FILES=($(python3 -c "
+import json
+print(' '.join(json.load(open('$NS_CFG'))['env_files']))"))
+
 
 [ $# -ge 2 ] || die "usage: pm-provision.sh <slug> \"<feature brief>\" [package ...]"
 
@@ -70,7 +83,7 @@ PACKAGES=("$@")
 
 BRANCH="feat/$SLUG"
 WORKTREE="$WT_ROOT/pm-$SLUG"
-TEST_DB="acme_test_$SLUG"
+TEST_DB="${TEST_DB_PREFIX}_$SLUG"
 CLAIM="$REGISTRY/$SLUG.json"
 
 mkdir -p "$REGISTRY"
@@ -288,7 +301,7 @@ fi
 # Ports are deterministic per PM so two PMs can never collide, and the block starts
 # well above the human's stack (9090, 8081, 3001, 3100, 3200).
 # ---------------------------------------------------------------------------
-PORT_BASE=$(REG="$REGISTRY" SLUG="$SLUG" python3 -c '
+PORT_BASE=$(REG="$REGISTRY" SLUG="$SLUG" PORT_START="$PORT_START" python3 -c '
 import glob, json, os
 reg, slug = os.environ["REG"], os.environ["SLUG"]
 taken = {}
@@ -299,7 +312,7 @@ for p in glob.glob(os.path.join(reg, "*.json")):
 if slug in taken:
     print(taken[slug])
 else:
-    b = 9200
+    b = int(os.environ.get("PORT_START", "9200"))
     while b in taken.values(): b += 20
     print(b)
 ')
@@ -333,9 +346,16 @@ gen_vite_config() {
 }
 
 say "generating PM-private vite configs"
-gen_vite_config booking-client vite.config.js         $((PORT_BASE + 1))
-gen_vite_config b2b-client     vite.portal.config.js  $((PORT_BASE + 2))
-gen_vite_config b2b-client     vite.console.config.js $((PORT_BASE + 3))
+FE_N=1
+while IFS="|" read -r fe_pkg fe_cfg; do
+  [ -n "$fe_pkg" ] || continue
+  gen_vite_config "$fe_pkg" "$fe_cfg" $((PORT_BASE + FE_N))
+  FE_N=$((FE_N + 1))
+done < <(python3 -c "
+import json
+for f in json.load(open('$NS_CFG')).get('frontends', []):
+    print(f\"{f['package']}|{f['vite_config']}\")
+")
 
 # Keep generated configs out of every diff, without touching the repo's .gitignore.
 EXCL="$WORKTREE/.git/info/exclude"
@@ -363,8 +383,11 @@ fi
 for pkg in "${PACKAGES[@]}"; do
   case "$pkg" in
     root) dir="$WORKTREE" ;;
-    api|client|public-client|admin-client) dir="$WORKTREE/$pkg" ;;
-    *) die "unknown package '$pkg' (valid: api client public-client admin-client root)" ;;
+    *)
+      case " $VALID_PKGS " in
+        *" $pkg "*) dir="$WORKTREE/$pkg" ;;
+        *) die "unknown package '$pkg' (this repo has: $VALID_PKGS)" ;;
+      esac ;;
   esac
   [ -f "$dir/package.json" ] || { warn "no package.json in $pkg, skipping"; continue; }
   if [ -d "$dir/node_modules" ]; then

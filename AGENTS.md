@@ -31,6 +31,7 @@ setup happens at kickoff rather than mid-run.
 
 | Command | What it does |
 |---|---|
+| `bash scripts/pm-config.sh derive\|validate` | Derive this repo's config from evidence into `.nightshift/config.json`. Written unconfirmed; a human must confirm it. |
 | `bash scripts/pm-provision.sh <slug> "<brief>" [pkg ...]` | Claim a slot, build a verified worktree, write the ledger skeleton. Refuses to hand over a half-built tree. |
 | `bash scripts/pm-launch.sh <slug>` | Start the supervised loop: tmux + caffeinate + restart wrapper + dead-PM watchdog. |
 | `bash scripts/pm-launch.sh <slug> --once` | Run exactly one wake in the foreground. Use this before trusting the loop. |

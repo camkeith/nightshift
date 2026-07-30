@@ -57,6 +57,23 @@ acted on all night. Tell the human plainly that this is a one-time cost per repo
 Also confirm the base branch from that file. Never infer it from recent PR bases; release
 PRs and feature PRs commonly target different branches.
 
+### 2a. Verify this repo's nightshift config
+
+```bash
+bash <scripts>/pm-config.sh validate
+```
+
+If it fails, run `pm-config.sh derive`. It inspects the repo and writes
+`.nightshift/config.json`: base branch, the gitignored env files a fresh worktree will
+not have, package names, vite configs, test-DB prefix. Every field comes from something
+checkable, not a guess.
+
+It is written `"confirmed": false` and provisioning refuses until a human reads it. That
+is deliberate. A missing env file yields a worktree that looks completely fine and cannot
+run anything, and you find out three hours into a feature. The first real derivation also
+picked the *dev* database name instead of the test one, which is exactly what the review
+catches.
+
 ### 2b. Check for a nightshift update
 
 ```bash

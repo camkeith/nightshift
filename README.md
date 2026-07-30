@@ -202,8 +202,9 @@ plus Terraform project sharing no stack with the one nightshift was built on).
 infrastructure. The central claim, that a PM can take a brief, write code, verify it, and
 open a PR unattended, has not been demonstrated end to end.
 
-**Known limitation:** `pm-provision.sh` has a `PER-REPO CONFIG` block (base branch,
-gitignored env files, valid package names) that you fill in by hand. `repo-recon` tells
-you exactly what belongs there. It is not auto-derived on purpose: guessing a repo's
-required-but-gitignored files wrong produces a worktree that looks fine and cannot run
-anything, which is worse than asking.
+**Per-repo setup is derived, not hand-edited.** `pm-config.sh derive` inspects the repo
+and writes `.nightshift/config.json` from evidence: env files are those that exist locally
+and are git-ignored (exactly what a fresh worktree lacks), packages are directories with a
+`package.json`, frontends are vite configs actually present. It is written
+`"confirmed": false` and provisioning refuses until you read it, because a missing env
+file yields a worktree that looks fine and cannot run anything.
