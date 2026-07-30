@@ -120,7 +120,13 @@ mkdir -p "$(dirname "$LOCK")"
 printf '%s\n' "$TOKEN" > "$LOCK"
 # Only clear a lock we still own, or a watcher that just handed over would delete the
 # incoming one's claim on its way out.
-trap '[ "$(cat "$LOCK" 2>/dev/null)" = "$TOKEN" ] && rm -f "$LOCK"' EXIT INT TERM
+release() { [ "$(cat "$LOCK" 2>/dev/null)" = "$TOKEN" ] && rm -f "$LOCK"; return 0; }
+trap release EXIT
+# INT and TERM must EXIT, not just clean up. A handler that falls through resumes the
+# loop, which then reads the lock the handler just deleted, and the watcher lingers for
+# another poll before quitting with "a newer watcher took over" when nothing took over.
+trap 'release; kill "${SLEEP_PID:-0}" 2>/dev/null; exit 0' INT TERM
+SLEEP_PID=""
 
 echo "watching nightshift PMs in $(basename "$REPO") · one line per change"
 prev=""
@@ -140,5 +146,9 @@ while true; do
     fi
     prev="$cur"
   fi
-  sleep "$INTERVAL"
+  # Backgrounded sleep plus wait, not a plain sleep: bash defers a trap until the current
+  # foreground command finishes, so a plain `sleep 20` means a stopped watcher holds its
+  # lock and stays in the task list for up to a full interval. `wait` is interruptible.
+  sleep "$INTERVAL" & SLEEP_PID=$!
+  wait "$SLEEP_PID" 2>/dev/null || true
 done
