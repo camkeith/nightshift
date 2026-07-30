@@ -3,10 +3,15 @@
 
 Layout is a split: PM list on the left, detail on the right, aggregate header on top.
 
-    ^/v  select        tab   cycle pane      enter  focus detail
-    i    message PM    a     attach (tmux)   w      wake now
-    s    stop PM       r     refresh         q      quit
+    ^/v  scroll detail (or select worker on WORKERS list; keeps selection on screen)
+    <>   cycle pane      enter  open worker / toggle focus
+    i    message PM      a      attach (tmux)   w      wake now
+    s    stop PM         r      refresh         q      quit
     esc  back out: cancels a prompt, leaves a worker, clears the selection
+    home/end/pgup/pgdn   jump in the detail pane
+
+Worker detail shows Claude sessionId + agentId + transcript path so you can open
+the same chat from a terminal (e.g. `less <path>` or `claude --resume <sessionId>`).
 
 WHAT IT WILL AND WILL NOT WRITE
 
@@ -20,8 +25,8 @@ steer days of unattended work. See references/ledger-schema.md.
 
 WHY YOU CANNOT TYPE INTO A PM
 
-Each wake is a fresh `claude -p`: prompt in, result out, exit. It is non-interactive by
-construction, which is what makes "resume from files" true rather than aspirational. So
+Each wake is a fresh provider process: prompt in, result out, exit. It is non-interactive
+by construction, which is what makes "resume from files" true rather than aspirational. So
 `a` puts you in the supervisor's tmux session where you can watch, and `i` is how you
 actually say something the PM will act on.
 
@@ -209,6 +214,41 @@ def workers_for(p):
         out.append((st.st_mtime, st.st_size, f))
     out.sort(reverse=True)
     return out
+
+
+def worker_ids(path):
+    """Parent chat sessionId and agentId for opening the transcript outside pm-top.
+
+    Claude Code writes these on every jsonl line. Path fallback covers truncated files:
+    ~/.claude/projects/<encoded-wt>/<sessionId>/subagents/agent-<agentId>.jsonl
+    """
+    session_id = agent_id = ""
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as fh:
+            for _ in range(40):
+                line = fh.readline()
+                if not line:
+                    break
+                try:
+                    o = json.loads(line)
+                except Exception:
+                    continue
+                session_id = session_id or o.get("sessionId") or ""
+                agent_id = agent_id or o.get("agentId") or ""
+                if session_id and agent_id:
+                    break
+    except Exception:
+        pass
+    parts = path.split(os.sep)
+    try:
+        i = parts.index("subagents")
+        session_id = session_id or parts[i - 1]
+        base = os.path.basename(path)
+        if base.startswith("agent-") and base.endswith(".jsonl"):
+            agent_id = agent_id or base[len("agent-"):-len(".jsonl")]
+    except ValueError:
+        pass
+    return session_id, agent_id
 
 
 def last_text(path, limit=500):
@@ -681,6 +721,7 @@ def draw(stdscr, S):
             # drilled into one worker: its whole conversation, newest last
             mt, sz, f = ws[S["wopen"]]
             u = transcript_usage(f) or {}
+            sid, aid = worker_ids(f)
             items = [(f"worker {S['wopen']+1}/{len(ws)}  ·  {os.path.basename(f)[:40]}", BOLD, C_HEAD),
                      (f"model {u.get('model','?')}   {u.get('msgs',0)} message(s)   "
                       f"last active {time.strftime('%H:%M:%S', time.localtime(mt))}", DIM, 0),
@@ -688,7 +729,10 @@ def draw(stdscr, S):
                       f"out {fmt_tokens(u.get('out',0))}   "
                       f"cache write {fmt_tokens(u.get('cache_w',0))}   "
                       f"cache read {fmt_tokens(u.get('cache_r',0))}", 0, C_GREEN),
-                     ("esc or <- returns to the worker list", DIM, 0),
+                     (f"session  {sid or '?'}", 0, C_CYAN),
+                     (f"agent    {aid or '?'}", 0, C_CYAN),
+                     (f"path     {f}", DIM, 0),
+                     ("^/v or pgup/pgdn scroll this log   esc or <- back to list", DIM, 0),
                      ("", 0, 0)]
             g = worker_goal(f)
             if g:
@@ -720,6 +764,7 @@ def draw(stdscr, S):
                 cur = i == wsel
                 mark = "> " if cur else "  "
                 u = transcript_usage(f) or {}
+                sid, aid = worker_ids(f)
                 meta = f"{u.get('model','?')}  in {fmt_tokens(u.get('in',0))}" \
                        f" out {fmt_tokens(u.get('out',0))}" \
                        f" cache {fmt_tokens(u.get('cache_r',0))}"
@@ -727,6 +772,13 @@ def draw(stdscr, S):
                               f"{os.path.basename(f)[:26]}",
                               BOLD if cur else 0, C_CYAN if cur else C_MUTED))
                 items.append(("    " + meta, DIM, C_GREEN if cur else 0))
+                id_line = "    "
+                if sid:
+                    id_line += f"session {sid[:8]}…  " if len(sid) > 12 else f"session {sid}  "
+                if aid:
+                    id_line += f"agent {aid}"
+                if sid or aid:
+                    items.append((id_line.rstrip(), DIM, C_CYAN if cur else 0))
                 g = worker_goal(f, 160).replace("\n", " ")
                 if g:
                     items.append(("    goal: " + g, DIM, C_HEAD))
@@ -737,6 +789,16 @@ def draw(stdscr, S):
 
     wrapped = wrap(items, RW)
     view_h = body_bot - (ty + 2)
+    # Keep the selected worker row on screen. Without this, ^/v moves wsel into
+    # rows below the fold and the arrows look dead.
+    if pane == 1 and S.get("wopen") is None and S.get("_ws"):
+        for i, (text, _, _) in enumerate(wrapped):
+            if text.startswith("> "):
+                if i < scroll:
+                    scroll = i
+                elif i >= scroll + max(1, view_h):
+                    scroll = i - view_h + 1
+                break
     scroll = max(0, min(scroll, max(0, len(wrapped) - view_h)))
     S["scroll"] = scroll
     for i, (text, attr, c) in enumerate(wrapped[scroll:scroll + view_h]):
@@ -748,7 +810,15 @@ def draw(stdscr, S):
 
     # ---- footer ----
     hline(stdscr, h - 2, 0, w, "─", C(C_MUTED))
-    keys = [("^v", "pm"), ("<>", "pane"), ("enter", "open"), ("i", "msg"),
+    if S.get("wopen") is not None:
+        nav = ("^v", "scroll")
+    elif pane == 1 and S.get("_ws"):
+        nav = ("^v", "worker")
+    elif pane in (0, 2):
+        nav = ("^v", "scroll")
+    else:
+        nav = ("^v", "pm")
+    keys = [nav, ("<>", "pane"), ("enter", "open"), ("i", "msg"),
             ("a", "attach"), ("w", "wake"), ("s", "stop"), ("q", "quit")]
     x = 1
     for k, lbl in keys:
@@ -852,7 +922,12 @@ def main(stdscr, repo, skill_dir):
             if S.get("wopen") is not None:
                 S["wopen"], S["scroll"] = None, 0
         elif k in (curses.KEY_DOWN, ord("j")):
-            if S["pane"] == 1 and S.get("wopen") is None and S.get("_ws"):
+            # Worker detail / ledger / output: arrows scroll the right pane.
+            # Workers list: arrows move the selection (draw keeps it on screen).
+            # Left PM list only when focus is still "list" and we are not in workers.
+            if S.get("wopen") is not None or S["pane"] in (0, 2) or S["focus"] == "detail":
+                S["scroll"] += 1
+            elif S["pane"] == 1 and S.get("_ws"):
                 S["wsel"] = min(S.get("wsel", 0) + 1, len(S["_ws"]) - 1)
             elif S["focus"] == "list":
                 S["sel"] = min(sel + 1, max(0, len(pms) - 1))
@@ -860,7 +935,9 @@ def main(stdscr, repo, skill_dir):
             else:
                 S["scroll"] += 1
         elif k in (curses.KEY_UP, ord("k")):
-            if S["pane"] == 1 and S.get("wopen") is None and S.get("_ws"):
+            if S.get("wopen") is not None or S["pane"] in (0, 2) or S["focus"] == "detail":
+                S["scroll"] = max(0, S["scroll"] - 1)
+            elif S["pane"] == 1 and S.get("_ws"):
                 S["wsel"] = max(S.get("wsel", 0) - 1, 0)
             elif S["focus"] == "list":
                 S["sel"] = max(sel - 1, 0)
@@ -877,6 +954,10 @@ def main(stdscr, repo, skill_dir):
             S["scroll"] += 20
         elif k == curses.KEY_PPAGE:
             S["scroll"] = max(0, S["scroll"] - 20)
+        elif k == curses.KEY_HOME:
+            S["scroll"] = 0
+        elif k == curses.KEY_END:
+            S["scroll"] = 10**9   # draw clamps to the bottom
 
         elif k == ord("i") and p:
             msg = prompt(stdscr, f"message to {p['slug']} (esc cancels):")
