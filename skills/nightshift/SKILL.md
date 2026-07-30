@@ -107,6 +107,34 @@ this is the last question until the PM hits a blocker:
 If the brief is ambiguous between readings that differ materially in effort or blast
 radius, resolve it here. That is the whole point of the one question you get.
 
+### 3b. If the human does not answer
+
+A question that blocks forever is its own failure. `askUserQuestionTimeout` (a Claude Code
+setting, `60s` / `5m` / `10m`) auto-continues with whatever is selected when it fires. It
+defaults to `never`, so if it is unset a question hangs until the run ages out.
+
+**What "continue" means depends entirely on what was being asked**, and getting this
+backwards is expensive:
+
+| Situation | On timeout |
+|---|---|
+| A reversible mid-run choice (which of two equivalent approaches, a naming call) | Proceed with the option you recommended. Log it in `DECISIONS` as a substituted decision, with the reasoning and the fact that it timed out. |
+| **Kickoff configuration** (slug, brief, packages, base branch, ship boundary, workflows) | **Park. Do not provision.** Write the proposed configuration to `<repo>/.nightshift/proposed-<slug>.md` and stop, telling the human the command to run when they are ready. |
+| Anything destructive, credential-gated, or touching a production deploy path | Park, always. A timeout is not consent, and silence is the weakest possible signal to act on. |
+
+The middle row is the one that matters. Kickoff's single question sets the premise for
+hours or days of unattended work. Auto-continuing there buys five minutes and risks two
+days of confident work on an unconfirmed brief, which is the failure mode hardest to
+detect from a ledger the next morning.
+
+The general rule: **a timeout may substitute for an answer only where a wrong answer is
+cheap to reverse.** Everywhere else it means the human is not available, which is exactly
+when you should not be starting something.
+
+Note also that a question arriving *mid-wake* is already a bug, not a situation to time
+out of. Nobody is there. If you find yourself wanting to ask something after kickoff, the
+dispatch or the brief was under-specified; park it and say so.
+
 ### 4. Provision and launch
 
 ```bash

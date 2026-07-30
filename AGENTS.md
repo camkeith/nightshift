@@ -91,6 +91,7 @@ Violating any of these is how an unattended run destroys work rather than produc
 | **Verification stays with the dispatcher, never the doer.** | A worker reporting success is not evidence. Overnight there is no human backstop, so the PM is it. |
 | **Leave manual-QA boxes unchecked.** | A PM that cannot run a browser says so. Checkbox state is the only completion record that survives compaction. |
 | **Never change shared nightshift machinery on your own.** | Write ranked options into the ledger and stop. This has already happened once and the restraint was correct. |
+| **A timeout is not consent.** It substitutes for an answer only where a wrong answer is cheap to reverse. | Auto-continuing on kickoff config provisions a PM on an unconfirmed brief and runs it for days. Park instead, with the proposal written down. |
 | **Do not supervise workers for correctness.** Watch for silence and cost only. | Holding live progress state is session memory, which dies with the wake. Mid-course correction produces hybrids. A worker that went wrong was under-specified; fix the goal, not the middle. |
 | **Always pass `model` explicitly on every dispatch.** | Inheriting means paying top-tier rates for file-listing work, multiplied across days and PMs. |
 | **Tests are a deliverable.** New behavior needs new cases, including the failure path. | Checking a box because the pre-existing suite still passes is the commonest way an unattended run produces work that looks finished and is not. |
