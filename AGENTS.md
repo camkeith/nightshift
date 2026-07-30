@@ -37,7 +37,7 @@ setup happens at kickoff rather than mid-run.
 | `bash scripts/pm-launch.sh <slug> --once` | Run exactly one wake in the foreground. Use this before trusting the loop. |
 | `bash scripts/pm-launch.sh <slug> --stop` | Stop that PM's tmux session. |
 | `bash scripts/pm-launch.sh <slug> --provider claude\|codex\|cursor` | Set/persist inference provider on the claim (default `claude`). |
-| `bash scripts/pm-top.sh` | Interactive. Split view with per-PM stats (runtime, wakes, spend, commits, diff, task progress, workers). `^/v` pick a PM, `<-/->` switch pane, `enter` open a worker. Per-PM: started, runtime, wakes, spend, commits, diff, task progress, models, token split. Per-worker: its goal from the PM, model, tokens, and a collapsed tool timeline. Mouse and wheel supported. Writes only INBOX.md. |
+| `bash scripts/pm-top.sh` | Interactive. Split view with per-PM stats (runtime, wakes, spend, commits, diff, task progress, agents). `Tab` switches PMs ↔ detail; `↑↓` move the focused region (`[PMs]` / `[agents]` / `[scroll]`); `n`/`p` change PM; `[`/`]` cycle panes; `Enter` opens an agent. Mouse and wheel supported. Writes only INBOX.md. |
 | `bash scripts/pm-watch.sh` | One line per PM state change. Run it with `run_in_background` when a human wants progress without leaving Claude Code: background tasks populate the arrow-navigable footer, so it becomes an entry they reach with `down`, then `enter`. `--once` prints the current state and exits. |
 | `bash scripts/pm-overlay-install.sh` | Bind prefix+C-n in tmux to float pm-top over Claude Code. Esc returns. The footer can host pm-watch but not a curses UI; see the script header. |
 | `bash scripts/pm-status.sh [slug]` | Every PM on one screen, blockers first, with spend. The breakfast view. |
