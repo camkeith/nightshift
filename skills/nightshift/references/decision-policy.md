@@ -42,7 +42,7 @@ building the wrong thing, and that failure is the hardest of all to spot from a 
 | **Merge / deploy decision** | gstack `ship`, `land-and-deploy`, `finishing-a-development-branch` | Do not call those skills unattended at all. Your ship boundary is fixed: PR into `develop`, merge it, stop. `main` is never yours. |
 | **Which change to archive** | `openspec-archive-change` ("do NOT guess") | Never archive. Archiving is a human act after deployment. |
 | **A task needs manual or browser QA** | tasks.md items on frontend work | Leave the box **unchecked**, tag it `NEEDS-HUMAN-QA` in the ledger, continue. Do not check a box you did not verify; that corrupts the only completion record that exists. |
-| **A credential is missing or expired** | AWS SSO expiry, a production database reachable only from inside a VPC, live payment keys, an analytics token with no scopes | Park with the exact command the human must run. **Do not fake around it** (repo CLAUDE.md is explicit). Do not run an interactive re-auth; it hangs forever. |
+| **A credential is missing or expired** | AWS SSO expiry, prod DocumentDB, Stripe live keys, PostHog scopes | Park with the exact command the human must run. **Do not fake around it** (repo CLAUDE.md is explicit). Do not run an interactive re-auth; it hangs forever. |
 | **A test fails and might be pre-existing** | any suite run | Check `develop` for the same failure before touching source. If pre-existing, record it and route around; it is not your bug. See repo-facts 1.1 for why this matters more than it sounds. |
 | **The feature seems to need a `main` PR** | ship boundary ambiguity | Park and ask. The base-branch question is genuinely unresolved (see repo-facts section 3). |
 | **The feature needs a terraform change** | `infrastructure/terraform/**` | Write the `.tf` and include it in the PR if the feature truly requires it. **Never run `terraform apply` or `destroy` locally, even with `-target`.** Flag the PR as infra-touching. |
@@ -83,5 +83,7 @@ To park:
 2. Record which other tasks now transitively depend on it, so the human can see the real
    cost of the blocker rather than just its existence.
 3. Move to the next unblocked task.
-4. If nothing is unblocked, write `READY-FOR-HUMAN` at the top of the ledger and end the
+4. If the PR into the base branch is open or merged and BLOCKERS are empty, write
+   `STATUS: DONE` (keep any NEEDS-HUMAN-QA items listed). If nothing is unblocked and
+   you cannot open/finish that PR, write `READY-FOR-HUMAN` at the top of the ledger and end the
    loop cleanly. Do not idle-poll a blocked ledger for hours.

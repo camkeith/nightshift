@@ -170,11 +170,14 @@ terminal. Package installs cannot write `~/.npm/_cacache` from inside a sandbox 
 cannot reach its socket, but both work fine unsandboxed, and at kickoff the human is
 present to approve that one call.
 
-**Provider switch (manual, per PM).** Default is `claude`. To keep a PM going when Claude
-is out of tokens: `pm-launch.sh <slug> --provider codex` (or `cursor`). The choice is
-persisted on the registry claim. Non-Claude wakes still read the ledger and do one unit
-of work; they do not get Claude's `Agent` / `Workflow` tools or nightshift skill
-auto-load. Prefer `--once` after switching before leaving the loop unsupervised.
+**Provider fallback (automatic).** Default chain is `claude → codex → cursor` with Cursor
+on `grok-4.5[effort=high,fast=true]` (Grok 4.5 High Fast). A failed wake advances to the
+next provider in the chain and persists the first that succeeds, so a Claude weekly-limit
+outage overnight does not burn five identical Claude failures. Override with
+`PM_FALLBACK_CHAIN` / `PM_CURSOR_MODEL`. Manual pin still works:
+`pm-launch.sh <slug> --provider codex` (starts the chain at that provider, forward only).
+Non-Claude wakes still read the ledger and do one unit of work; they do not get Claude's
+`Agent` / `Workflow` tools or nightshift skill auto-load.
 
 Measured: `npm install` unsandboxed returns exit 0 and writes the cache normally. An
 earlier version of this file claimed setup required a human's terminal. That was wrong,
@@ -585,7 +588,13 @@ Send a `PushNotification` in exactly these cases:
 | Case | Message should say |
 |---|---|
 | You set `STATUS: READY-FOR-HUMAN` | what is blocking and how many, so they know whether it is a 30-second unblock or a real decision |
-| You set `STATUS: DONE` | the PR is open and what still needs their QA |
+| You set `STATUS: DONE` | the PR is open/merged and what still needs their QA |
+
+**DONE vs READY-FOR-HUMAN.** When the PR into the base branch is open or merged and there
+are no open BLOCKERS, set `STATUS: DONE`. Leave residual `NEEDS-HUMAN-QA` items listed;
+they are the breakfast checklist, not a reason to stay on READY-FOR-HUMAN. The supervisor
+also promotes READY-FOR-HUMAN → DONE when it detects a merged PR (or a recorded PR with
+no blockers), so completed ships do not linger as "NEEDS YOU".
 | A finding is genuinely unsafe to leave until morning (credentials appear compromised, you discover something already broken in production) | what is wrong, in the first six words |
 
 Send nothing for: a completed task, a wake that went well, a parked blocker with work

@@ -25,6 +25,12 @@
 #   cursor           — `cursor-agent -p` (same limits as codex)
 #   Resolve order: --provider > PM_PROVIDER env > claim.provider > claude.
 #   CLI/env values are written to the claim so restarts stick.
+#
+# AUTO FALLBACK (wake failure / quota):
+#   Default chain claude → codex → cursor. On a failed wake, try the next provider
+#   in the chain (starting from the current one) and persist the first that works.
+#   Cursor fallback model defaults to grok-4.5 high/fast. Override with
+#   PM_FALLBACK_CHAIN and PM_CURSOR_MODEL.
 
 set -euo pipefail
 
@@ -42,6 +48,10 @@ SKILL_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 INTERVAL="${PM_INTERVAL:-300}"      # seconds between wakes
 MAX_FAILS="${PM_MAX_FAILS:-5}"      # consecutive failures before giving up
 MAX_STAGNANT="${PM_MAX_STAGNANT:-5}" # wakes with no progress before stopping
+# Comma-separated. Wake failures advance forward only (never back to an earlier provider).
+FALLBACK_CHAIN="${PM_FALLBACK_CHAIN:-claude,codex,cursor}"
+# Cursor Grok 4.5 High Fast (effort=high, fast=true).
+CURSOR_FALLBACK_MODEL="${PM_CURSOR_MODEL:-grok-4.5[effort=high,fast=true]}"
 
 die() { printf '\033[31merror:\033[0m %s\n' "$*" >&2; exit 1; }
 say() { printf '\033[36m==>\033[0m %s\n' "$*"; }
@@ -181,15 +191,9 @@ except Exception:
 ' 2>/dev/null
       ;;
     cursor)
-      python3 -c '
-import json, os
-try:
-    d = json.load(open(os.path.expanduser("~/.cursor/cli-config.json")))
-    m = d.get("model") or {}
-    print((m.get("modelId") or m.get("model") or "") if isinstance(m, dict) else (m or ""))
-except Exception:
-    pass
-' 2>/dev/null
+      # Prefer the nightshift Cursor fallback (Grok 4.5 High Fast) over whatever
+      # the human's interactive CLI default happens to be.
+      printf '%s\n' "$CURSOR_FALLBACK_MODEL"
       ;;
     claude)
       # Claude's model is only known after the wake JSON lands; leave blank here.
@@ -228,7 +232,10 @@ open(p, "a").write("\n")
 fi
 
 # Shared wake body. Ledger is the memory; the provider process is disposable.
-read -r -d '' WAKE_BODY <<PROMPT || true
+# Rebuilt whenever the provider changes (fallback), so keep this as a function.
+build_wake_prompt() {
+  local body
+  read -r -d '' body <<PROMPT || true
 You are PM "$SLUG", working in $WORKTREE.
 
 This is a fresh process with no memory of previous wakes. Everything you know is on
@@ -238,16 +245,23 @@ continue the loop from wherever the ledger says you are.
 Do one useful unit of work this wake, verify it yourself, write the result back to the
 ledger, and exit. Do not try to finish the whole feature in one wake.
 
-If every remaining task is BLOCKED, set STATUS: READY-FOR-HUMAN at the top of the
-ledger and exit without doing more work.
+STATUS rules (important):
+- Set STATUS: DONE when engineering work for the brief is finished and the PR into the
+  base branch is open or merged. Leave residual NEEDS-HUMAN-QA items listed, but do
+  NOT stay on READY-FOR-HUMAN just because frontend QA remains. DONE is the completed
+  ship state; NEEDS-HUMAN-QA is the breakfast checklist under it.
+- Set STATUS: READY-FOR-HUMAN only when nothing unblocked remains (open BLOCKERS and
+  zero productive tasks you can still do). That means the machine has stopped.
+- If every remaining task is BLOCKED, set STATUS: READY-FOR-HUMAN and exit without
+  doing more work.
 PROMPT
-
-# Claude can load the nightshift skill; other providers only get the ledger-driven body.
-if [ "$PROVIDER" = "claude" ]; then
-  WAKE_PROMPT="Use the nightshift skill. $WAKE_BODY"
-else
-  WAKE_PROMPT="Follow the nightshift PM loop using only what is on disk (LEDGER.md and any OpenSpec files it references). You do not have Claude Code's Agent/Workflow tools. $WAKE_BODY"
-fi
+  if [ "$PROVIDER" = "claude" ]; then
+    WAKE_PROMPT="Use the nightshift skill. $body"
+  else
+    WAKE_PROMPT="Follow the nightshift PM loop using only what is on disk (LEDGER.md and any OpenSpec files it references). You do not have Claude Code's Agent/Workflow tools. $body"
+  fi
+}
+build_wake_prompt
 
 # Standing Workflow orchestration for the PM. Opt in with PM_WORKFLOWS=1.
 # Claude-only: Codex/Cursor have no equivalent settings key.
@@ -404,6 +418,151 @@ if text:
 ' 2>/dev/null || true
 }
 
+# Persist provider (+ optional model) on the claim and rebuild wake prompt/model.
+apply_provider() {
+  local next="$1"
+  case "$next" in
+    claude|codex|cursor) ;;
+    *) warn "skip unknown provider '$next'"; return 1 ;;
+  esac
+  local bin
+  bin=$(provider_bin "$next")
+  if ! command -v "$bin" >/dev/null 2>&1; then
+    warn "provider '$next' skipped: '$bin' not on PATH"
+    return 1
+  fi
+  PROVIDER="$next"
+  MODEL="$(PROVIDER="$PROVIDER" resolve_model | tr -d '\r' | head -1 | tr -d '\n')"
+  build_wake_prompt
+  CLAIM="$CLAIM" PROVIDER="$PROVIDER" MODEL="${MODEL:-}" python3 -c '
+import json, os, re
+p, prov = os.environ["CLAIM"], os.environ["PROVIDER"]
+model = (os.environ.get("MODEL") or "").strip()
+try:
+    d = json.load(open(p))
+except Exception:
+    d = {}
+
+def short(m):
+    if not m or m == "<synthetic>":
+        return ""
+    return re.sub(r"^claude-", "", re.sub(r"-\d{8}$", "", str(m)))
+
+old_prov = (d.get("provider") or "claude").strip() or "claude"
+old_model = short(d.get("last_model") or "")
+if old_model and (old_prov != prov or (model and short(model) != old_model)):
+    label = f"{old_prov}/{old_model}"
+    hist = [x for x in (d.get("former_models") or []) if x and x != label]
+    hist.append(label)
+    d["former_models"] = hist[-8:]
+d["provider"] = prov
+if model:
+    d["last_model"] = model
+json.dump(d, open(p, "w"), indent=2)
+open(p, "a").write("\n")
+'
+  return 0
+}
+
+# Providers still to try, starting at the current one (forward-only).
+fallback_tail() {
+  PROVIDER="$PROVIDER" FALLBACK_CHAIN="$FALLBACK_CHAIN" python3 -c '
+import os
+chain = [p.strip() for p in os.environ.get("FALLBACK_CHAIN", "claude,codex,cursor").split(",") if p.strip()]
+cur = (os.environ.get("PROVIDER") or "claude").strip() or "claude"
+if cur in chain:
+    print(" ".join(chain[chain.index(cur):]))
+else:
+    print(" ".join(chain))
+'
+}
+
+# If the feature PR is already merged and there are no open BLOCKERS, promote to DONE.
+# READY-FOR-HUMAN with only NEEDS-HUMAN-QA leftovers is a completed ship, not a stop.
+promote_done_if_shipped() {
+  CLAIM="$CLAIM" WORKTREE="$WORKTREE" REPO="$REPO" python3 - <<'PY'
+import json, os, re, subprocess, datetime
+
+claim_path = os.environ["CLAIM"]
+ledger_path = os.path.join(os.environ["WORKTREE"], "LEDGER.md")
+repo = os.environ["REPO"]
+
+try:
+    claim = json.load(open(claim_path))
+except Exception:
+    raise SystemExit(0)
+
+branch = (claim.get("branch") or "").strip()
+if not branch:
+    raise SystemExit(0)
+
+try:
+    text = open(ledger_path).read()
+except FileNotFoundError:
+    raise SystemExit(0)
+
+st = re.search(r"^STATUS:\s*(\S+)", text, re.M)
+status = st.group(1) if st else ""
+if status == "DONE":
+    # Keep registry in sync even if only the ledger was edited.
+    if claim.get("status") != "DONE":
+        claim["status"] = "DONE"
+        claim["heartbeat"] = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        json.dump(claim, open(claim_path, "w"), indent=2)
+        open(claim_path, "a").write("\n")
+    raise SystemExit(0)
+
+# Open BLOCKERS checkboxes still mean the machine is waiting.
+block = re.search(r"^## BLOCKERS\n(.*?)(?=^## |\Z)", text, re.S | re.M)
+block_body = block.group(1) if block else ""
+if re.search(r"^- \[ \]", block_body, re.M):
+    raise SystemExit(0)
+
+merged = False
+try:
+    out = subprocess.check_output(
+        ["gh", "pr", "list", "--head", branch, "--state", "merged",
+         "--json", "number", "--jq", "length"],
+        cwd=repo, text=True, stderr=subprocess.DEVNULL,
+    ).strip()
+    merged = out.isdigit() and int(out) > 0
+except Exception:
+    merged = False
+
+# PR URL/number already recorded in the ledger (open or merged).
+open_pr = bool(re.search(r"PR\s*#\d+|https://github\.com/[^\s]+/pull/\d+", text, re.I))
+
+# Promote when: merged PR, OR READY-FOR-HUMAN with a recorded PR and no blockers.
+if merged:
+    pass
+elif status == "READY-FOR-HUMAN" and open_pr:
+    pass
+else:
+    raise SystemExit(0)
+
+now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+new_text, n = re.subn(r"^STATUS:.*$", "STATUS: DONE", text, count=1, flags=re.M)
+if n:
+    # Attribute the promotion so the PM does not treat it as its own prose.
+    note = (
+        f"\n- {now} — STATUS set to DONE by supervisor "
+        f"({'merged PR' if merged else 'PR recorded; no open BLOCKERS'}). "
+        f"NEEDS-HUMAN-QA items remain listed if present.\n"
+    )
+    if "## WAKE LOG" in new_text:
+        new_text = new_text.replace("## WAKE LOG", "## WAKE LOG\n" + note.rstrip() + "\n", 1)
+    else:
+        new_text += note
+    open(ledger_path, "w").write(new_text)
+
+claim["status"] = "DONE"
+claim["heartbeat"] = now
+json.dump(claim, open(claim_path, "w"), indent=2)
+open(claim_path, "a").write("\n")
+print(f"promoted {claim.get('slug')} → DONE")
+PY
+}
+
 run_one_wake() {
   cd "$WORKTREE"
   OUT="$WORKTREE/.nightshift-wake.json"
@@ -449,11 +608,19 @@ run_one_wake() {
     cursor)
       ERR="$WORKTREE/.nightshift-cursor.err"
       : > "$ERR"
-      cursor-agent -p --force --trust --sandbox disabled \
-        --workspace "$WORKTREE" \
-        --output-format json \
-        ${MODEL:+--model "$MODEL"} \
-        "$WAKE_PROMPT" < /dev/null > "$OUT" 2>"$ERR" || rc=$?
+      # Quote model so bracket params (effort/fast) survive.
+      if [ -n "${MODEL:-}" ]; then
+        cursor-agent -p --force --trust --sandbox disabled \
+          --workspace "$WORKTREE" \
+          --output-format json \
+          --model "$MODEL" \
+          "$WAKE_PROMPT" < /dev/null > "$OUT" 2>"$ERR" || rc=$?
+      else
+        cursor-agent -p --force --trust --sandbox disabled \
+          --workspace "$WORKTREE" \
+          --output-format json \
+          "$WAKE_PROMPT" < /dev/null > "$OUT" 2>"$ERR" || rc=$?
+      fi
       if [ -s "$ERR" ]; then
         cat "$ERR"
       fi
@@ -462,6 +629,35 @@ run_one_wake() {
 
   record_wake "$OUT"
   return $rc
+}
+
+# Try the current provider, then each later entry in FALLBACK_CHAIN.
+run_wake_with_fallback() {
+  local start="$PROVIDER"
+  local chain
+  chain=$(fallback_tail)
+  local first=1
+  local p
+  for p in $chain; do
+    if [ "$first" -eq 0 ] || [ "$p" != "$start" ]; then
+      if [ "$first" -eq 0 ]; then
+        warn "wake failed via previous provider; falling back to $p"
+      fi
+    fi
+    first=0
+    if ! apply_provider "$p"; then
+      continue
+    fi
+    say "single wake for '$SLUG' via $PROVIDER${MODEL:+ ($MODEL)}"
+    if run_one_wake; then
+      if [ "$PROVIDER" != "$start" ]; then
+        say "fallback succeeded; claim provider is now '$PROVIDER'"
+      fi
+      return 0
+    fi
+    warn "wake failed via $PROVIDER"
+  done
+  return 1
 }
 
 # Stamp the heartbeat AND the ledger's LAST WAKE line.
@@ -503,10 +699,19 @@ PY
 }
 
 if [ "$MODE" = "--once" ]; then
-  say "single wake for '$SLUG' via $PROVIDER (foreground)"
-  run_one_wake
+  promote_done_if_shipped || true
+  if grep -qE '^STATUS: DONE' "$WORKTREE/LEDGER.md" 2>/dev/null; then
+    say "'$SLUG' is already DONE; skipping wake"
+    beat DONE
+    exit 0
+  fi
+  if run_wake_with_fallback; then
+    promote_done_if_shipped || true
+    beat RUNNING
+    exit 0
+  fi
   beat RUNNING
-  exit 0
+  exit 1
 fi
 
 command -v tmux >/dev/null || die "tmux not found: brew install tmux"
@@ -532,6 +737,10 @@ if tmux has-session -t "$SESSION" 2>/dev/null; then
       ;;
   esac
 fi
+
+# Promote completed ships before the terminal-state gate (merged PR / READY-FOR-HUMAN
+# with a recorded PR and no blockers → DONE).
+promote_done_if_shipped || true
 
 # Refuse to relaunch into a terminal state. Otherwise the loop would wake, immediately
 # see READY-FOR-HUMAN, and stop again, burning a wake to learn what the ledger already says.
@@ -597,11 +806,12 @@ while true; do
   wake=\$((wake + 1))
   printf '\n\033[36m=== wake %d  %s ===\033[0m\n' "\$wake" "\$(date -u +%H:%M:%SZ)"
 
+  # --once now includes provider fallback (claude → codex → cursor grok).
   if bash "$SKILL_DIR/scripts/pm-launch.sh" "$SLUG" --once; then
     fails=0
   else
     fails=\$((fails + 1))
-    printf '\033[33mwake failed (%d/%d consecutive)\033[0m\n' "\$fails" "$MAX_FAILS"
+    printf '\033[33mwake failed across fallback chain (%d/%d consecutive)\033[0m\n' "\$fails" "$MAX_FAILS"
     if [ "\$fails" -ge "$MAX_FAILS" ]; then
       printf '\033[31mgiving up after %d consecutive failures\033[0m\n' "\$fails"
       python3 -c "
@@ -657,5 +867,6 @@ cat <<EOF
     provider   bash $SKILL_DIR/scripts/pm-launch.sh $SLUG --provider claude|codex|cursor
 
   wake interval ${INTERVAL}s. it stops on its own at READY-FOR-HUMAN or DONE.
+  fallback   ${FALLBACK_CHAIN} (cursor model: ${CURSOR_FALLBACK_MODEL})
 
 EOF

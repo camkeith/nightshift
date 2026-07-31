@@ -18,6 +18,11 @@ is a bug.
 # PM: <slug>
 
 STATUS: RUNNING | READY-FOR-HUMAN | DONE
+<!-- DONE = engineering finished and PR open/merged. NEEDS-HUMAN-QA may still
+     list residual checks; those do not keep STATUS at READY-FOR-HUMAN.
+     READY-FOR-HUMAN = nothing unblocked remains (open BLOCKERS only).
+     The supervisor auto-promotes to DONE when the PR is merged and BLOCKERS
+     are empty. -->
 FEATURE: <one line, the brief as you understand it>
 BRANCH: feat/<slug>
 WORKTREE: <repo>/.claude/worktrees/pm-<slug>
